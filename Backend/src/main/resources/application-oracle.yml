@@ -5,8 +5,8 @@ spring:
   datasource:
     url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:freepdb1}
     driver-class-name: oracle.jdbc.OracleDriver
-    username: ${ORACLE_USERNAME:restrovision}
-    password: ${ORACLE_PASSWORD:restrovision123}
+    username: ${ORACLE_USERNAME}
+    password: ${ORACLE_PASSWORD}
   flyway:
     enabled: true
     baseline-on-migrate: true
@@ -19,3 +19,13 @@ spring:
     properties:
       hibernate:
         dialect: org.hibernate.dialect.OracleDialect
+
+# Production Security Requirements: Mandatory Environment Secrets (No Fallbacks)
+restrovision:
+  jwt:
+    secret: ${RESTROVISION_JWT_SECRET}
+  edge:
+    hmac-secret: ${RESTROVISION_HMAC_SECRET}
+  security:
+    cookie:
+      secure: ${RESTROVISION_COOKIE_SECURE:true}
