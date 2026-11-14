@@ -5,6 +5,7 @@ import com.restrovision.repository.EdgeNodeRepository;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -38,15 +39,42 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         this.edgeNodeRepository = edgeNodeRepository;
     }
 
+    public enum AuthSource {
+        NONE,
+        BEARER_HEADER,
+        COOKIE
+    }
+
+    private static class ResolvedAuth {
+        final String token;
+        final AuthSource source;
+
+        ResolvedAuth(String token, AuthSource source) {
+            this.token = token;
+            this.source = source;
+        }
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         try {
-            String jwt = getJwtFromRequest(request);
+            ResolvedAuth auth = resolveToken(request);
 
-            if (StringUtils.hasText(jwt) && tokenProvider.validateToken(jwt)) {
-                Claims claims = tokenProvider.getClaims(jwt);
+            if (StringUtils.hasText(auth.token) && tokenProvider.validateToken(auth.token)) {
+                // If authenticated via browser cookie on mutating requests, enforce CSRF protection
+                if (auth.source == AuthSource.COOKIE && isStateChangingRequest(request) && !isCsrfExempt(request)) {
+                    if (!validateCsrf(request)) {
+                        logger.warn("CSRF validation failed for cookie-authenticated mutation to: " + request.getRequestURI());
+                        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+                        response.setContentType("application/problem+json");
+                        response.getWriter().write("{\"type\":\"urn:restrovision:error:csrf-token-invalid\",\"title\":\"Forbidden\",\"status\":403,\"detail\":\"CSRF token validation failed for cookie-authenticated request.\"}");
+                        return;
+                    }
+                }
+
+                Claims claims = tokenProvider.getClaims(auth.token);
                 String tokenType = claims.get("type", String.class);
 
                 // 1. Explicitly reject refresh tokens attempted as Bearer tokens
@@ -71,6 +99,64 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         } finally {
             TenantContext.clear();
         }
+    }
+
+    private ResolvedAuth resolveToken(HttpServletRequest request) {
+        String bearerToken = request.getHeader("Authorization");
+        if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
+            return new ResolvedAuth(bearerToken.substring(7).trim(), AuthSource.BEARER_HEADER);
+        }
+
+        Cookie[] cookies = request.getCookies();
+        if (cookies != null) {
+            for (Cookie c : cookies) {
+                if ("restro_access_token".equals(c.getName()) && StringUtils.hasText(c.getValue())) {
+                    return new ResolvedAuth(c.getValue().trim(), AuthSource.COOKIE);
+                }
+            }
+        }
+
+        return new ResolvedAuth(null, AuthSource.NONE);
+    }
+
+    private boolean isStateChangingRequest(HttpServletRequest request) {
+        String method = request.getMethod();
+        return "POST".equalsIgnoreCase(method) ||
+               "PUT".equalsIgnoreCase(method) ||
+               "DELETE".equalsIgnoreCase(method) ||
+               "PATCH".equalsIgnoreCase(method);
+    }
+
+    private boolean isCsrfExempt(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        return path.startsWith("/api/v1/auth/login") ||
+               path.startsWith("/api/v1/auth/refresh") ||
+               path.startsWith("/api/v1/auth/logout") ||
+               path.startsWith("/api/v1/public/") ||
+               path.startsWith("/ws");
+    }
+
+    private boolean validateCsrf(HttpServletRequest request) {
+        String headerToken = request.getHeader("X-CSRF-TOKEN");
+        if (!StringUtils.hasText(headerToken)) {
+            headerToken = request.getHeader("X-XSRF-TOKEN");
+        }
+        if (!StringUtils.hasText(headerToken)) {
+            return false;
+        }
+
+        String cookieToken = null;
+        Cookie[] cookies = request.getCookies();
+        if (cookies != null) {
+            for (Cookie c : cookies) {
+                if ("restro_csrf_token".equals(c.getName())) {
+                    cookieToken = c.getValue();
+                    break;
+                }
+            }
+        }
+
+        return StringUtils.hasText(cookieToken) && cookieToken.equals(headerToken);
     }
 
     private void processEdgeDeviceAuthentication(Claims claims, HttpServletRequest request) {
@@ -158,13 +244,5 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
         authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
         SecurityContextHolder.getContext().setAuthentication(authentication);
-    }
-
-    private String getJwtFromRequest(HttpServletRequest request) {
-        String bearerToken = request.getHeader("Authorization");
-        if (StringUtils.hasText(bearerToken) && bearerToken.startsWith("Bearer ")) {
-            return bearerToken.substring(7);
-        }
-        return null;
     }
 }

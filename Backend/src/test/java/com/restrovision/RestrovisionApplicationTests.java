@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import jakarta.servlet.http.Cookie;
 import org.springframework.http.MediaType;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.simp.stomp.StompCommand;
@@ -2447,5 +2448,136 @@ class RestrovisionApplicationTests {
         globalPing.setUser(auth);
         globalPing.setSessionAttributes(sessionAttrs);
         assertThat(webSocketConfig.createSecurityInterceptor().preSend(MessageBuilder.createMessage(new byte[0], globalPing.getMessageHeaders()), null)).isNotNull();
+    }
+
+    @Test
+    @DisplayName("29: BUG-014: Login issues HttpOnly cookies and CSRF cookie")
+    void test29_LoginIssuesHttpOnlyCookiesAndCsrfCookie() throws Exception {
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"owner@restrovision.local\",\"password\":\"Admin@123\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.email").value("owner@restrovision.local"))
+                .andReturn();
+
+        List<String> setCookies = result.getResponse().getHeaders("Set-Cookie");
+        assertThat(setCookies).isNotEmpty();
+
+        boolean hasAccessCookie = false;
+        boolean hasRefreshCookie = false;
+        boolean hasCsrfCookie = false;
+
+        for (String c : setCookies) {
+            if (c.contains("restro_access_token=")) {
+                hasAccessCookie = true;
+                assertThat(c).contains("HttpOnly");
+                assertThat(c).contains("SameSite=Lax");
+                assertThat(c).contains("Path=/");
+            } else if (c.contains("restro_refresh_token=")) {
+                hasRefreshCookie = true;
+                assertThat(c).contains("HttpOnly");
+                assertThat(c).contains("SameSite=Lax");
+                assertThat(c).contains("Path=/api/v1/auth");
+            } else if (c.contains("restro_csrf_token=")) {
+                hasCsrfCookie = true;
+                // CSRF cookie must NOT be HttpOnly so frontend JS can read it for double-submit
+                assertThat(c).doesNotContain("HttpOnly");
+                assertThat(c).contains("SameSite=Lax");
+                assertThat(c).contains("Path=/");
+            }
+        }
+
+        assertThat(hasAccessCookie).isTrue();
+        assertThat(hasRefreshCookie).isTrue();
+        assertThat(hasCsrfCookie).isTrue();
+    }
+
+    @Test
+    @DisplayName("30: BUG-014: Cookie authentication and CSRF protection for mutating requests")
+    void test30_CookieAuthAndCsrfEnforcement() throws Exception {
+        // 1. Perform login to obtain valid cookies
+        MvcResult loginResult = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"manager@restrovision.local\",\"password\":\"Manager@123\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        Cookie accessCookie = loginResult.getResponse().getCookie("restro_access_token");
+        Cookie csrfCookie = loginResult.getResponse().getCookie("restro_csrf_token");
+        assertThat(accessCookie).isNotNull();
+        assertThat(csrfCookie).isNotNull();
+
+        // 2. Cookie authentication on GET /api/v1/auth/me succeeds without CSRF header (safe method)
+        mockMvc.perform(get("/api/v1/auth/me")
+                        .cookie(accessCookie))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.email").value("manager@restrovision.local"));
+
+        // 3. Mutating request (PUT /api/v1/tables/1/status) with cookie but NO CSRF header -> 403 Forbidden
+        mockMvc.perform(put("/api/v1/tables/1/status")
+                        .cookie(accessCookie)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"OCCUPIED\",\"reason\":\"Seating party\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.type").value("urn:restrovision:error:csrf-token-invalid"));
+
+        // 4. Mutating request with cookie and mismatched CSRF header -> 403 Forbidden
+        mockMvc.perform(put("/api/v1/tables/1/status")
+                        .cookie(accessCookie)
+                        .header("X-CSRF-TOKEN", "tampered-csrf-token")
+                        .cookie(csrfCookie)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"OCCUPIED\",\"reason\":\"Seating party\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.type").value("urn:restrovision:error:csrf-token-invalid"));
+
+        // 5. Mutating request with cookie and valid matching CSRF header -> 200 OK
+        mockMvc.perform(put("/api/v1/tables/1/status")
+                        .cookie(accessCookie)
+                        .header("X-CSRF-TOKEN", csrfCookie.getValue())
+                        .cookie(csrfCookie)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"AVAILABLE\",\"reason\":\"Table reset\"}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @DisplayName("31: BUG-014: Cookie-based refresh and logout clears auth cookies")
+    void test31_CookieRefreshAndLogout() throws Exception {
+        // 1. Perform login
+        MvcResult loginResult = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"owner@restrovision.local\",\"password\":\"Admin@123\"}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        Cookie refreshCookie = loginResult.getResponse().getCookie("restro_refresh_token");
+        assertThat(refreshCookie).isNotNull();
+
+        // 2. Refresh using cookie without sending token in JSON body
+        MvcResult refreshResult = mockMvc.perform(post("/api/v1/auth/refresh")
+                        .cookie(refreshCookie)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        Cookie newAccessCookie = refreshResult.getResponse().getCookie("restro_access_token");
+        assertThat(newAccessCookie).isNotNull();
+        assertThat(newAccessCookie.getValue()).isNotEmpty();
+
+        // 3. Logout clears all cookies with Max-Age=0
+        MvcResult logoutResult = mockMvc.perform(post("/api/v1/auth/logout"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        List<String> logoutCookies = logoutResult.getResponse().getHeaders("Set-Cookie");
+        assertThat(logoutCookies).isNotEmpty();
+
+        for (String c : logoutCookies) {
+            if (c.contains("restro_access_token=") || c.contains("restro_refresh_token=") || c.contains("restro_csrf_token=")) {
+                assertThat(c).contains("Max-Age=0");
+            }
+        }
     }
 }

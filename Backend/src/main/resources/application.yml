@@ -66,6 +66,8 @@ restrovision:
       undelivered-orders: 1.0
       open-tasks: 0.5
   security:
+    cookie:
+      secure: ${RESTROVISION_COOKIE_SECURE:false}
     rate-limit:
       max-attempts-per-ip: ${RESTROVISION_LOGIN_MAX_IP_ATTEMPTS:10}
       max-attempts-per-account: ${RESTROVISION_LOGIN_MAX_ACCOUNT_ATTEMPTS:5}

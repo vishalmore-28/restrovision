@@ -23,6 +23,13 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
 import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerConfigurer;
+import org.springframework.web.socket.server.HandshakeInterceptor;
+import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
+import org.springframework.http.server.ServletServerHttpRequest;
+import org.springframework.web.socket.WebSocketHandler;
+import jakarta.servlet.http.Cookie;
+import java.util.Map;
 
 import java.util.Collections;
 import java.util.List;
@@ -54,11 +61,39 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
+        HandshakeInterceptor interceptor = cookieHandshakeInterceptor();
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns("*")
+                .addInterceptors(interceptor)
                 .withSockJS();
         registry.addEndpoint("/ws")
-                .setAllowedOriginPatterns("*");
+                .setAllowedOriginPatterns("*")
+                .addInterceptors(interceptor);
+    }
+
+    private HandshakeInterceptor cookieHandshakeInterceptor() {
+        return new HandshakeInterceptor() {
+            @Override
+            public boolean beforeHandshake(ServerHttpRequest request, ServerHttpResponse response,
+                                           WebSocketHandler wsHandler, Map<String, Object> attributes) {
+                if (request instanceof ServletServerHttpRequest servletRequest) {
+                    Cookie[] cookies = servletRequest.getServletRequest().getCookies();
+                    if (cookies != null) {
+                        for (Cookie cookie : cookies) {
+                            if ("restro_access_token".equals(cookie.getName())) {
+                                attributes.put("restro_access_token", cookie.getValue());
+                                break;
+                            }
+                        }
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            public void afterHandshake(ServerHttpRequest request, ServerHttpResponse response,
+                                       WebSocketHandler wsHandler, Exception exception) {}
+        };
     }
 
     @Override
@@ -75,12 +110,31 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
                 if (StompCommand.CONNECT.equals(accessor.getCommand())) {
                     String authHeader = accessor.getFirstNativeHeader("Authorization");
-                    if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-                        log.warn("STOMP CONNECT rejected: Missing or invalid Authorization header");
-                        throw new AuthenticationCredentialsNotFoundException("STOMP connection rejected: Missing or invalid Authorization header");
+                    String token = null;
+                    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                        token = authHeader.substring(7).trim();
+                    } else if (accessor.getSessionAttributes() != null && accessor.getSessionAttributes().containsKey("restro_access_token")) {
+                        token = (String) accessor.getSessionAttributes().get("restro_access_token");
+                    } else {
+                        List<String> cookieHeaders = accessor.getNativeHeader("cookie");
+                        if (cookieHeaders != null) {
+                            for (String ch : cookieHeaders) {
+                                for (String part : ch.split(";")) {
+                                    String p = part.trim();
+                                    if (p.startsWith("restro_access_token=")) {
+                                        token = p.substring("restro_access_token=".length()).trim();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    String token = authHeader.substring(7).trim();
+                    if (token == null) {
+                        log.warn("STOMP CONNECT rejected: Missing or invalid Authorization header or cookie");
+                        throw new AuthenticationCredentialsNotFoundException("STOMP connection rejected: Missing or invalid credentials");
+                    }
+
                     if (!tokenProvider.validateToken(token)) {
                         log.warn("STOMP CONNECT rejected: Token validation failed or token expired");
                         throw new BadCredentialsException("STOMP connection rejected: Token validation failed or token expired");

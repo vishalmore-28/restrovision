@@ -96,19 +96,19 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     const unsubWs = wsService.onConnectionChange(setWsConnected);
 
-    const token = getAuthToken();
-    if (token) {
-      api.getCurrentUser()
-        .then((profile) => {
+    // Validate current user session via HttpOnly cookie
+    api.getCurrentUser()
+      .then((profile) => {
+        if (profile) {
           setUser(profile);
           sessionStorage.setItem('restrovision_session_user', JSON.stringify(profile));
           wsService.connect(profile.restaurantId || 1);
-        })
-        .catch((err) => {
-          console.warn('[AuthContext] Current user token validation failed, falling back to unauthenticated:', err?.message || err);
-        })
-        .finally(() => setLoading(false));
-    }
+        }
+      })
+      .catch((err) => {
+        console.warn('[AuthContext] Current user session validation returned unauthenticated:', err?.message || err);
+      })
+      .finally(() => setLoading(false));
 
     return () => unsubWs();
   }, []);
@@ -116,8 +116,7 @@ export function AuthProvider({ children }) {
   const login = async (email, password) => {
     try {
       const res = await api.login(email, password);
-      setAuthToken(res.accessToken);
-      setRefreshToken(res.refreshToken);
+      // Profile metadata stored in React state (sensitive JWTs remain isolated in HttpOnly cookies)
       setUser(res.user);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
       wsService.connect(res.user?.restaurantId || 1);
@@ -139,13 +138,17 @@ export function AuthProvider({ children }) {
     }
   };
 
-  const logout = () => {
-    setAuthToken(null);
-    setRefreshToken(null);
+  const logout = async () => {
+    try {
+      await api.logout();
+    } catch (e) {
+      console.warn('[AuthContext] Server logout request failed:', e?.message || e);
+    }
     setUser(null);
     try {
       localStorage.removeItem('restrovision_active_user');
       localStorage.removeItem('restrovision_token');
+      localStorage.removeItem('restrovision_refresh_token');
       sessionStorage.removeItem('restrovision_session_user');
     } catch (e) {
       console.warn('[AuthContext] Failed to clear storage on logout:', e?.message || e);
@@ -158,8 +161,6 @@ export function AuthProvider({ children }) {
     try {
       setLoading(true);
       const res = await api.login(preset.email, preset.pass);
-      setAuthToken(res.accessToken);
-      setRefreshToken(res.refreshToken);
       setUser(res.user);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
       wsService.connect(res.user?.restaurantId || 1);
