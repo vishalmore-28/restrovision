@@ -48,7 +48,7 @@ export const ROLE_METADATA = {
 export const ROLE_PERMISSIONS = {
   OWNER: ['analytics', 'floor', 'alerts', 'kitchen', 'waiter', 'cleaning', 'cctv', 'qr'],
   MANAGER: ['analytics', 'floor', 'alerts', 'kitchen', 'waiter', 'cleaning', 'cctv', 'qr'],
-  KITCHEN: ['kitchen', 'cleaning', 'alerts', 'cctv'],
+  KITCHEN: ['kitchen', 'cleaning', 'alerts'],
   WAITER: ['waiter', 'floor', 'qr'],
   CLEANING: ['cleaning', 'floor'],
 };
