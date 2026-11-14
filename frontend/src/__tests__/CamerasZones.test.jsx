@@ -9,6 +9,8 @@ vi.mock('../services/api', () => ({
     getCameras: vi.fn(),
     getZones: vi.fn(),
     getAiEvents: vi.fn(),
+    overrideTableStatus: vi.fn(),
+    seatParty: vi.fn(),
   },
 }));
 
@@ -61,6 +63,7 @@ describe('CamerasZones Component', () => {
     api.getCameras.mockResolvedValue(mockCameras);
     api.getZones.mockResolvedValue(mockZones);
     api.getAiEvents.mockResolvedValue(mockAiEvents);
+    api.overrideTableStatus.mockResolvedValue({ tableId: 1, status: 'OCCUPIED' });
 
     mockGetTracks = vi.fn(() => [{ stop: vi.fn() }]);
     mockMediaStream = {
@@ -181,5 +184,50 @@ describe('CamerasZones Component', () => {
     expect(
       screen.queryByText(/Camera permission was denied. Please allow camera access in your browser./i)
     ).not.toBeInTheDocument();
+  });
+
+  it('triggers AI detection of seated party and synchronizes table state to OCCUPIED', async () => {
+    render(<CamerasZones />);
+
+    const seatedBtn = screen.getByText(/AI Detect: Seated Patrons/i);
+    fireEvent.click(seatedBtn);
+
+    await waitFor(() => {
+      expect(api.overrideTableStatus).toHaveBeenCalledWith(
+        1,
+        'OCCUPIED',
+        expect.stringContaining('AI Vision')
+      );
+      expect(screen.getByText(/Table T01 confirmed OCCUPIED/i)).toBeInTheDocument();
+    });
+  });
+
+  it('triggers AI detection of table vacated and updates table state to DIRTY', async () => {
+    render(<CamerasZones />);
+
+    const vacatedBtn = screen.getByText(/AI Detect: Table Vacated/i);
+    fireEvent.click(vacatedBtn);
+
+    await waitFor(() => {
+      expect(api.overrideTableStatus).toHaveBeenCalledWith(
+        1,
+        'DIRTY',
+        expect.stringContaining('AI Vision')
+      );
+      expect(screen.getByText(/Table T01 VACATED/i)).toBeInTheDocument();
+    });
+  });
+
+  it('toggles continuous AI Auto-Pilot loop between enabled and paused', async () => {
+    render(<CamerasZones />);
+
+    const autoPilotBtn = screen.getByText(/ENABLED/i);
+    expect(autoPilotBtn).toBeInTheDocument();
+
+    fireEvent.click(autoPilotBtn);
+    expect(screen.getByText(/PAUSED/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/PAUSED/i));
+    expect(screen.getByText(/ENABLED/i)).toBeInTheDocument();
   });
 });
