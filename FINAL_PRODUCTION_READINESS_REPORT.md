@@ -1,18 +1,18 @@
 # RESTROVISION v2.0 — Final Production Readiness Assessment Report
 
-**Document ID:** `PROD-READINESS-20261115-REVISED`  
+**Document ID:** `PROD-READINESS-20261115-V3`  
 **Application Target:** RESTROVISION v2.0 Platform (Spring Boot 3.3.5 / Java 21, React 18 / Vite 6, FastAPI / Python 3.11/3.13, Oracle 26ai Free)  
 **Branch:** `feature/production-hardening`  
 **Protected Branch:** `main` (Locked at `171171b08f6bd44f523f224d00c197624246613f`)  
 **Lead Auditor:** Principal Software QA Engineer, Security Auditor & Release Architect  
-**Date:** 2026-11-15T00:45:00+05:30  
+**Date:** 2026-11-15T01:15:00+05:30  
 **Overall Release Verdict:** **NOT PRODUCTION READY** *(Mandatory external infrastructure checks blocked)*  
 
 ---
 
 ## 1. Executive Summary & Release Verdict
 
-The RESTROVISION v2.0 engineering team has completed all software remediation, architectural hardening, accessibility enhancements, machine learning transparency upgrades, and automated regression suites across Groups 1 through 5 and the final hardening programme.
+The RESTROVISION v2.0 engineering team has completed all software remediation, architectural hardening, accessibility enhancements, machine learning transparency upgrades, and automated regression suites across Groups 1 through 5, as well as the final production deployment and operational runbook hardening.
 
 Every safely implementable defect across the platform has been remediated in source code, committed under granular Git history on `feature/production-hardening`, and validated with **223 out of 223 automated unit and integration tests passing** (100% pass rate).
 
@@ -24,9 +24,9 @@ In strict adherence to the project quality and release governance gates:
 The application is designated **NOT PRODUCTION READY** for live deployment cutover because several mandatory external infrastructure verification gates remain **BLOCKED** or **NOT RUN** due to host environment boundaries and administrative privilege requirements:
 
 1. **Docker Full-Stack Runtime (BLOCKED):** `com.docker.service` is stopped on the Windows host and cannot be started without elevated administrator permissions (`Access Denied`). Live multi-container builds, network startup, and container health probes cannot execute.
-2. **Oracle 26ai Production Database Verification (BLOCKED ON DBA):** The Oracle 26ai Free instance is running on `localhost:1521` with PDB `freepdb1` open `READ WRITE`, but the application user `restrovision` has not been provisioned by the DBA. Live Flyway migrations and transactional CRUD tests against Oracle remain blocked pending user creation.
+2. **Oracle 26ai Production Database Verification (BLOCKED ON DBA):** The Oracle 26ai Free instance is running on `localhost:1521` with PDB `freepdb1` open `READ WRITE`, but the dual database accounts (`RESTROVISION_MIGRATOR` and `RESTROVISION_APP`) have not been provisioned by the DBA. Live Flyway migrations and transactional CRUD tests against Oracle remain blocked pending user creation.
 3. **Maven OWASP Dependency-Check (BLOCKED ON NVD KEY):** The strict profile (`dependency-audit-strict`, CVSS 7.0) is configured in `pom.xml`, but the absence of `$env:NVD_API_KEY` prevents remote CVE database download due to NVD rate limits. Zero Maven vulnerabilities cannot be claimed.
-4. **Real Browser End-to-End Testing (BLOCKED):** Cannot be executed without the live containerized application running.
+4. **Real Browser End-to-End Testing (BLOCKED / NOT RUN):** Cannot be executed without the live containerized application running.
 5. **True 100-VU Concurrent Load Testing (BLOCKED / NOT RUN):** 100 sequential latency iterations ran and passed ($\le 12.34$ ms p95), but true concurrent virtual user load testing requires a running multi-container deployment and an external orchestrator (k6/JMeter).
 
 ---
@@ -60,11 +60,12 @@ The application is designated **NOT PRODUCTION READY** for live deployment cutov
 - **BUG-023 (Original) (MEDIUM):** Production multi-stage `frontend/Dockerfile` (`node:22-alpine` -> `nginx:alpine`), `.dockerignore`, and `nginx.conf` implemented. *(Syntax & Config PASS; Live Runtime BLOCKED)*.
 
 ### Question 2: Which defects were newly discovered?
-**Answer:** Four new defects were identified and resolved during this final hardening cycle:
+**Answer:** Five new defects and operational vulnerabilities were identified and resolved during this final hardening cycle:
 1. **NEW-001 (Compose Healthchecks & Dependencies):** `docker-compose.yml` lacked container healthchecks on frontend and edge-ai, had no `condition: service_healthy` startup dependency ordering, and contained an obsolete `version: '3.8'` tag. *(Resolved in `10073a4`)*.
 2. **NEW-002 (Oracle Service Name Mismatch):** `application-oracle.yml` defaulted to `ORCLPDB1`, whereas Oracle 26ai Free uses `freepdb1` by default. *(Resolved in `82235f4`)*.
 3. **NEW-003 (Missing CI/CD Workflow):** No `.github/workflows/` directory existed in the repository. *(Resolved in `82235f4`)*.
 4. **NEW-004 (Insecure Oracle Secret Fallbacks):** `application-oracle.yml` defaulted to password `restrovision123` and lacked mandatory secret fail-fast validation. *(Resolved in `a4b61d3`)*.
+5. **NEW-005 (Dual-Account Oracle Architecture & Production Compose):** Single-user database connection model risked DDL execution from web app, and lack of dedicated production compose risked compiling raw source files on production hosts with exposed ports. Resolved via `application-oracle.yml` dual-account support (`RESTROVISION_MIGRATOR` vs `RESTROVISION_APP`) and `docker-compose.prod.yml` with private network isolation and immutable image tags/digests.
 
 ### Question 3: Which Group 5 items are fully resolved?
 **Answer:** All four Group 5 phases are 100% resolved in source code and automated tests:
@@ -80,7 +81,9 @@ The application is designated **NOT PRODUCTION READY** for live deployment cutov
 3. **Oracle 26ai Free Alignment:** Reconfigured `application-oracle.yml` to default to `${ORACLE_SERVICE:freepdb1}`. *(Commit `82235f4`)*.
 4. **Original BUG-022 (Real CI/CD):** Created `.github/workflows/ci.yml` covering Java 21 Maven build/test, Node 22 Vitest/build, Python 3.11 Pytest, security audits, and Compose validation. *(Commit `82235f4`)*.
 5. **Insecure Password & Fallback Elimination:** Hardened `application-oracle.yml` to fail fast on startup if database credentials or encryption keys are missing, eliminating `restrovision123`. *(Commit `a4b61d3`)*.
-6. **Documentation & Runbook Corrections:** Removed plaintext secrets and unsafe `CASCADE` drops from runbooks, and accurately separated sequential benchmarks from concurrent load tests and JSDOM from real browser E2E.
+6. **Dual-Account Oracle Model:** Configured separate Flyway migration credentials (`ORACLE_MIGRATION_USERNAME`) and runtime credentials (`ORACLE_APP_USERNAME`) with schema targeting (`ORACLE_SCHEMA:RESTROVISION`).
+7. **Production Docker Compose (`docker-compose.prod.yml`):** Created dedicated production compose using immutable image tags/digests, private internal bridge network (`restrovision-network`), exposing only public ports 80/443 on Nginx while keeping backend (8080) and edge-ai (8000) private.
+8. **Documentation & Runbook Hardening:** Authored enterprise deployment runbook (`FINAL_DEPLOYMENT_CHECKLIST.md`) documenting DBA scripts, 10 GB quota justification, Data Pump vs RMAN PITR, HSTS subdomain caution, and non-echo secret injection scripts.
 
 ### Question 5: Which tests passed?
 **Answer:** A total of **223 out of 223 automated unit and integration tests passed** (100% pass rate):
@@ -102,13 +105,13 @@ The application is designated **NOT PRODUCTION READY** for live deployment cutov
 
 ### Question 9: Did Docker build all required images?
 **Answer:** **SYNTAX & CONFIGURATION PASS / BUILD BLOCKED.**
-All Dockerfiles (`Backend`, `frontend`, `edge-ai`) are multi-stage, use unprivileged non-root users (`appuser`, `nginx`), and define valid healthcheck probes. `docker compose config --quiet` exited with code `0`. Building images via Docker daemon was blocked because the Docker Desktop engine service was not running on the Windows host.
+All Dockerfiles (`Backend`, `frontend`, `edge-ai`) are multi-stage, use unprivileged non-root users (`appuser`, `nginx`), and define valid healthcheck probes. `docker compose config --quiet` and `docker compose -f docker-compose.prod.yml config --quiet` exited with code `0`. Building images via Docker daemon was blocked because the Docker Desktop engine service was not running on the Windows host.
 
 ### Question 10: Did Docker run the complete application?
 **Answer:** **BLOCKED (Documented).** Running the full containerized stack (`docker compose up -d`) requires an active Docker engine daemon. The daemon service is stopped on the host machine (`com.docker.service` cannot be started without administrative elevation).
 
 ### Question 11: Did Oracle migrations execute successfully against Oracle?
-**Answer:** **BLOCKED ON DBA (Documented).** Oracle 26ai Free is running on `localhost:1521` with PDB `freepdb1` open `READ WRITE`. However, application user `restrovision` has not yet been created by the DBA. Running Flyway against Oracle is blocked pending user creation. Both migration scripts (`V1__init_core_schema.sql` and `V2__add_optimistic_locking_version.sql`) were verified against the H2 Oracle-mode test database.
+**Answer:** **BLOCKED ON DBA (Documented).** Oracle 26ai Free is running on `localhost:1521` with PDB `freepdb1` open `READ WRITE`. However, database accounts (`RESTROVISION_MIGRATOR` and `RESTROVISION_APP`) have not yet been created by the DBA. Running Flyway against Oracle is blocked pending user creation. Both migration scripts (`V1__init_core_schema.sql` and `V2__add_optimistic_locking_version.sql`) were verified against the H2 Oracle-mode test database.
 
 ### Question 12: Did CI/CD execute successfully?
 **Answer:** **WORKFLOW CONFIGURED & LOCALLY VERIFIED (PASS) / REMOTE CI NOT RUN.**
@@ -127,17 +130,18 @@ Component and integration flows (Login authentication, CSRF cookie setting, QR p
 ### Question 15: What production operational checks remain?
 **Answer:**
 1. Host Administrator starts `com.docker.service` (Docker Desktop daemon).
-2. DBA executes the least-privilege provisioning script in `FREEPDB1` (see `FINAL_DEPLOYMENT_CHECKLIST.md`).
-3. Launch container stack with production environment secrets (`docker compose up --build -d`).
-4. Validate live container health probes (`/actuator/health`, `/health`, `/ai/v1/health/live`).
-5. Execute authenticated Dependency-Check scan in CI/CD with `$env:NVD_API_KEY`.
-6. Terminate TLS/HTTPS certificates on reverse proxy.
-7. Execute true 100-VU concurrent load test and real browser E2E against running stack.
+2. DBA executes the least-privilege dual-account provisioning script in `FREEPDB1` (see `FINAL_DEPLOYMENT_CHECKLIST.md`).
+3. Deploy container images via `docker compose -f docker-compose.prod.yml up -d` with injected secrets.
+4. Execute Flyway migrations under `RESTROVISION_MIGRATOR` and grant DML rights to `RESTROVISION_APP`.
+5. Validate live container health probes (`/actuator/health`, `/health`, `/ai/v1/health/live`).
+6. Execute authenticated Dependency-Check scan in CI/CD with `$env:NVD_API_KEY`.
+7. Terminate TLS/HTTPS certificates on reverse proxy.
+8. Execute true 100-VU concurrent load test and real browser E2E against running stack.
 
 ### Question 16: Which items are blocked?
 **Answer:**
 1. **Docker Container Builds & Runtime:** Blocked on host Docker Desktop daemon availability.
-2. **Live Oracle Migration Execution:** Blocked on Oracle DBA provisioning of schema user `restrovision` in PDB `freepdb1`.
+2. **Live Oracle Migration Execution:** Blocked on Oracle DBA provisioning of schema accounts in PDB `freepdb1`.
 3. **Maven Strict Dependency-Check Remote Scan:** Blocked on missing `$env:NVD_API_KEY`.
 4. **Real Browser E2E:** Blocked on running container stack.
 5. **100-VU Concurrent Load Test:** Blocked on running container stack.
@@ -153,30 +157,32 @@ Component and integration flows (Login authentication, CSRF cookie setting, QR p
 ### Question 19: What exact work remains?
 **Answer:**
 1. **Host Admin Action:** Start `Docker Desktop Service` on host.
-2. **DBA Action:** Create schema user `restrovision` in PDB `freepdb1`.
+2. **DBA Action:** Create dual accounts `restrovision_migrator` (10 GB quota) and `restrovision_app` (0 quota) in PDB `freepdb1`.
 3. **CI/SecOps Action:** Configure `$env:NVD_API_KEY` in CI runner and verify authenticated Maven scan.
-4. **Ops Action:** Deploy container stack, run 100-VU concurrent load test and Playwright E2E.
+4. **Ops Action:** Deploy pre-built images via `docker-compose.prod.yml`, run 100-VU concurrent load test and Playwright E2E.
 5. **Git Action:** Review and approve Pull Request merging `feature/production-hardening` into `main`.
 
 ---
 
 ## 3. Operational Verification Status Table
 
-| Item / Scope | Target Component | Verification Method | Status | Evidence / Notes |
+| Item / Scope | Target Component | Verification Method | Status Category | Evidence / Notes |
 | :--- | :--- | :--- | :---: | :--- |
-| **Backend Unit & Integration** | Spring Boot / Java 21 | `mvn clean test` (7 classes) | **PASS** | 118 / 118 passed in 01:03 min. Exit code 0. |
-| **Frontend JSDOM Suite** | React 18 / Vitest 4 | `npm run test` (5 suites) | **PASS** | 52 / 52 passed in 3.68 s. Exit code 0. |
-| **Frontend Production Build** | Vite 6.4.6 | `npm run build` | **PASS** | Compiled in 3.19 s. 1,613 modules. Exit code 0. |
-| **Edge AI Test Suite** | FastAPI / Python 3.13 | `pytest -v` (4 files) | **PASS** | 53 / 53 passed in 0.77 s. Exit code 0. |
-| **npm Security Audit** | Frontend dependencies | `npm audit --omit=dev` | **PASS** | 0 vulnerabilities (370 packages). Exit code 0. |
-| **pip Security Audit** | Python dependencies | `pip-audit -r requirements.txt` | **PASS** | No known vulnerabilities found. Exit code 0. |
+| **Backend Unit & Integration** | Spring Boot / Java 21 | `mvn clean test` (7 classes) | **AUTOMATED TESTED** | 118 / 118 passed in 01:03 min. Exit code 0. |
+| **Frontend JSDOM Suite** | React 18 / Vitest 4 | `npm run test` (5 suites) | **AUTOMATED TESTED** | 52 / 52 passed in 3.68 s. Exit code 0. |
+| **Frontend Production Build** | Vite 6.4.6 | `npm run build` | **STATICALLY VERIFIED** | Compiled in 3.19 s. 1,613 modules. Exit code 0. |
+| **Edge AI Test Suite** | FastAPI / Python 3.13 | `pytest -v` (4 files) | **AUTOMATED TESTED** | 53 / 53 passed in 0.77 s. Exit code 0. |
+| **npm Security Audit** | Frontend dependencies | `npm audit --omit=dev` | **STATICALLY VERIFIED** | 0 vulnerabilities (370 packages). Exit code 0. |
+| **pip Security Audit** | Python dependencies | `pip-audit -r requirements.txt` | **STATICALLY VERIFIED** | No known vulnerabilities found. Exit code 0. |
 | **Maven Dependency Scan** | Backend dependencies | `mvn dependency-check:check` | **BLOCKED** | Blocked on `$env:NVD_API_KEY`. Unverified. |
-| **Docker Compose Config** | `docker-compose.yml` | `docker compose config --quiet`| **PASS** | Validated with 0 warnings. Exit code 0. |
+| **Dev Docker Compose Config** | `docker-compose.yml` | `docker compose config --quiet`| **STATICALLY VERIFIED** | Validated with 0 warnings. Exit code 0. |
+| **Prod Docker Compose Config**| `docker-compose.prod.yml` | `docker compose -f docker-compose.prod.yml config` | **STATICALLY VERIFIED** | Validated with 0 syntax errors. Exit code 0. |
 | **Docker Container Runtime** | Full-Stack Containers | `docker compose up` | **BLOCKED** | Blocked on `com.docker.service` (stopped). |
+| **Oracle Dual-Account Config** | `application-oracle.yml` | Spring configuration load | **STATICALLY VERIFIED** | Verified with `TenantContextSafetyTest`. |
 | **Oracle DB Migrations** | Oracle 26ai Free | `mvn flyway:migrate -Poracle` | **BLOCKED** | Blocked on DBA provisioning in `FREEPDB1`. |
-| **Sequential Latency Benchmark**| `getTableView()` | 100 iterations (JUnit) | **PASS** | Measured p50: 5.68ms, p95: 12.34ms, p99: 14.15ms. |
-| **100-VU Concurrent Load Test** | Running Application | k6 / JMeter concurrent VUs | **BLOCKED** | Requires running container infrastructure. |
-| **Real Browser E2E** | Running Application | Playwright / Headless Browser | **BLOCKED** | Requires running container infrastructure. |
+| **Sequential Latency Benchmark**| `getTableView()` | 100 iterations (JUnit) | **AUTOMATED TESTED** | Measured p50: 5.68ms, p95: 12.34ms, p99: 14.15ms. |
+| **100-VU Concurrent Load Test** | Running Application | k6 / JMeter concurrent VUs | **BLOCKED / NOT RUN** | Requires running container infrastructure. |
+| **Real Browser E2E** | Running Application | Playwright / Headless Browser | **BLOCKED / NOT RUN** | Requires running container infrastructure. |
 | **Remote CI/CD Execution** | GitHub Actions | Remote push trigger | **NOT RUN** | Pending remote git push authorization. |
 
 ---

@@ -1,0 +1,75 @@
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-ghcr.io/restrovision/restrovision-backend:2.0.0}
+    container_name: restrovision-backend
+    restart: always
+    expose:
+      - "8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=oracle
+      - ORACLE_HOST=${ORACLE_HOST:-oracle-db}
+      - ORACLE_PORT=${ORACLE_PORT:-1521}
+      - ORACLE_SERVICE=${ORACLE_SERVICE:-freepdb1}
+      - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME:-restrovision_app}
+      - ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD}
+      - ORACLE_MIGRATION_USERNAME=${ORACLE_MIGRATION_USERNAME:-restrovision_migrator}
+      - ORACLE_MIGRATION_PASSWORD=${ORACLE_MIGRATION_PASSWORD}
+      - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET}
+      - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET}
+      - RESTROVISION_COOKIE_SECURE=true
+      - RESTROVISION_TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    networks:
+      - restrovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/restrovision/restrovision-frontend:2.0.0}
+    container_name: restrovision-frontend
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - restrovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  edge-ai:
+    image: ${EDGE_AI_IMAGE:-ghcr.io/restrovision/restrovision-edge-ai:2.0.0}
+    container_name: restrovision-edge-ai
+    restart: always
+    expose:
+      - "8000"
+    environment:
+      - SPRING_BOOT_URL=http://backend:8080
+      - EDGE_NODE_ID=${EDGE_NODE_ID:-edge-pune-01}
+      - RESTAURANT_ID=${RESTAURANT_ID:-1}
+      - SERVICE_TOKEN=${SERVICE_TOKEN:-}
+      - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - restrovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ai/v1/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  restrovision-network:
+    driver: bridge

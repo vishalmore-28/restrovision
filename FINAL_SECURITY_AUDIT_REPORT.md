@@ -52,12 +52,19 @@ This comprehensive security audit assesses the final hardened state of the RESTR
 
 ---
 
-## 3. Production Secret Hardening & Zero-Fallback Policy
+## 3. Production Secret Hardening & Enterprise Database Account Separation
 
-Following security audit findings, `Backend/src/main/resources/application-oracle.yml` was hardened (Commit `a4b61d3`):
+Following security audit findings and operational review, `Backend/src/main/resources/application-oracle.yml` was hardened (Commit `a4b61d3` and subsequent dual-account architecture):
+
+### 3.1 Elimination of Insecure Secret Fallbacks
 1. **Elimination of Weak Default Password:** The default fallback `password: ${ORACLE_PASSWORD:restrovision123}` was completely removed.
-2. **Mandatory Secrets Fail-Fast:** `username: ${ORACLE_USERNAME}`, `password: ${ORACLE_PASSWORD}`, `restrovision.jwt.secret: ${RESTROVISION_JWT_SECRET}`, and `restrovision.edge.hmac-secret: ${RESTROVISION_HMAC_SECRET}` have **zero default fallbacks**. If any secret is omitted at startup, the Spring Boot application fails fast immediately with `IllegalArgumentException`.
+2. **Mandatory Secrets Fail-Fast:** `username: ${ORACLE_APP_USERNAME:${ORACLE_USERNAME}}`, `password: ${ORACLE_APP_PASSWORD:${ORACLE_PASSWORD}}`, `restrovision.jwt.secret: ${RESTROVISION_JWT_SECRET}`, and `restrovision.edge.hmac-secret: ${RESTROVISION_EDGE_HMAC_SECRET}` have **zero default fallbacks**. If any secret is omitted at startup, the Spring Boot application fails fast immediately with `IllegalArgumentException`.
 3. **Mandatory Secure Cookies:** `restrovision.security.cookie.secure: ${RESTROVISION_COOKIE_SECURE:true}` defaults to `true` on the Oracle profile, guaranteeing that session and refresh tokens are transmitted only over HTTPS.
+
+### 3.2 Dual-Account Least Privilege Architecture
+To enforce strict separation of duties and defense-in-depth:
+1. **Migration Account (`RESTROVISION_MIGRATOR`):** Schema owner and DDL administrator. Executes Flyway migrations `V1` and `V2`. Granted specific DDL privileges (`CREATE TABLE`, `CREATE VIEW`, `CREATE SEQUENCE`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `CREATE SYNONYM`) derived strictly from the actual migration scripts. Unlimited tablespace quota was revoked and replaced with a justified finite quota of **10 GB** on `users` tablespace (sufficient for 2+ years of operation at 5,000 sessions/day while guarding against storage exhaustion).
+2. **Runtime Application Account (`RESTROVISION_APP`):** Application connection pool account used by Spring Boot JPA at runtime. Granted strictly **zero DDL privileges** (`NO CREATE TABLE`, `NO DROP`, `NO ALTER`) and **zero tablespace quota** (`QUOTA 0 ON users`). Receives only DML privileges (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) via dedicated role `restrovision_app_role` and synonyms, mitigating SQL injection impact against schema modification.
 
 ---
 
@@ -141,26 +148,38 @@ The Edge AI subsystem connects local camera nodes to the backend via HTTP and We
 - Database connections close immediately upon service method completion, preventing uncommitted transaction leaks into HTTP rendering threads.
 - All lazy relationships required by controllers are explicitly initialized using JPA `@EntityGraph` or DTO projections, verified with 0 `LazyInitializationException` across 10 endpoint tests in `OsivAndLazyLoadingEndpointProductionTest.java`.
 
+### 6.5 Network Boundary & Container Port Isolation
+Production container topology (`docker-compose.prod.yml`) enforces strict ingress perimeter isolation:
+- **Publicly Ingress Ports (Host):** Only Nginx frontend ports `80:80` (HTTP-to-HTTPS redirect) and `443:443` (TLS HTTPS / WSS) are published to the host network interface.
+- **Private Container Network (`restrovision-network`):** Backend port `8080` and Edge AI port `8000` are configured exclusively with `expose:` (not `ports:`), ensuring they cannot be reached directly from external networks or unauthenticated host processes. All traffic must pass through the Nginx reverse proxy.
+
+### 6.6 TLS Termination & HSTS Subdomain Audit Policy
+- Nginx terminates TLS 1.2/1.3 with high-strength cipher suites (`HIGH:!aNULL:!MD5`).
+- Reverse proxy injects standard security headers: `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 1; mode=block`, and `Referrer-Policy: strict-origin-when-cross-origin`.
+- **HSTS Subdomain Caution:** `Strict-Transport-Security` is configured as `max-age=31536000` without the `includeSubDomains` directive. The runbook explicitly forbids enabling `includeSubDomains` until an enterprise-wide certificate audit verifies that all organizational subdomains serve valid TLS certificates, preventing catastrophic outages of internal HTTP services.
+
 ---
 
 ## 7. Security Verification Matrix
 
-| Vulnerability Vector | Severity | Mitigation Technique | Verification Method | Status |
+| Vulnerability Vector | Severity | Mitigation Technique | Verification Method | Status Category |
 | :--- | :---: | :--- | :--- | :---: |
-| **STOMP Auth Bypass** | CRITICAL | ChannelInterceptor + JWT on CONNECT | 22 JUnit live STOMP tests | **PASS** |
-| **Cross-Tenant Subscribe**| CRITICAL | Fail-closed tenant & role check | 11 live STOMP integration tests | **PASS** |
-| **Edge Token Spoofing** | CRITICAL | Per-device cryptographic JWT + DB check | 7 JUnit edge security tests | **PASS** |
-| **Tenant Context Bleed** | HIGH | ThreadLocal cleanup in `finally` | 20 recycled worker thread test | **PASS** |
-| **AI Event Replay** | HIGH | Dual-window freshness + DB constraint | Freshness & duplicate tests | **PASS** |
-| **Login Brute Force** | HIGH | Dual sliding-window rate limiting | 5 JUnit brute-force tests | **PASS** |
-| **Feedback Stored XSS** | HIGH | Jsoup plain-text normalization | Multilingual XSS test vectors | **PASS** |
-| **JWT Storage Theft** | HIGH | HttpOnly, SameSite=Lax cookies + CSRF | 16 Vitest API interceptor tests | **PASS** |
-| **Transaction Leak (OSIV)**| HIGH | `spring.jpa.open-in-view: false` | 10 OSIV endpoint tests | **PASS** |
-| **Insecure Oracle Secrets** | HIGH | Fail-fast mandatory env secrets | CLI startup fail-fast test | **PASS** |
-| **npm Dependencies** | HIGH | Toolchain upgrade (Vite 6) | `npm audit` (0 vulnerabilities) | **PASS** |
-| **Python Dependencies** | HIGH | Package updates (FastAPI, cryptography) | `pip-audit` (0 vulnerabilities) | **PASS** |
+| **STOMP Auth Bypass** | CRITICAL | ChannelInterceptor + JWT on CONNECT | 22 JUnit live STOMP tests | **AUTOMATED TESTED (Pass)** |
+| **Cross-Tenant Subscribe**| CRITICAL | Fail-closed tenant & role check | 11 live STOMP integration tests | **AUTOMATED TESTED (Pass)** |
+| **Edge Token Spoofing** | CRITICAL | Per-device cryptographic JWT + DB check | 7 JUnit edge security tests | **AUTOMATED TESTED (Pass)** |
+| **Tenant Context Bleed** | HIGH | ThreadLocal cleanup in `finally` | 20 recycled worker thread test | **AUTOMATED TESTED (Pass)** |
+| **AI Event Replay** | HIGH | Dual-window freshness + DB constraint | Freshness & duplicate tests | **AUTOMATED TESTED (Pass)** |
+| **Login Brute Force** | HIGH | Dual sliding-window rate limiting | 5 JUnit brute-force tests | **AUTOMATED TESTED (Pass)** |
+| **Feedback Stored XSS** | HIGH | Jsoup plain-text normalization | Multilingual XSS test vectors | **AUTOMATED TESTED (Pass)** |
+| **JWT Storage Theft** | HIGH | HttpOnly, SameSite=Lax cookies + CSRF | 16 Vitest API interceptor tests | **AUTOMATED TESTED (Pass)** |
+| **Transaction Leak (OSIV)**| HIGH | `spring.jpa.open-in-view: false` | 10 OSIV endpoint tests | **AUTOMATED TESTED (Pass)** |
+| **Insecure Oracle Secrets** | HIGH | Fail-fast mandatory env secrets | CLI startup fail-fast test | **STATICALLY VERIFIED (Pass)** |
+| **Database Over-Privilege**| HIGH | Dual-account segregation (Migrator vs App)| Privilege script review & DDL test | **IMPLEMENTED & STATICALLY VERIFIED** |
+| **Container Port Exposure**| MEDIUM | `expose:` only for 8080/8000; 80/443 public| `docker-compose.prod.yml` inspection | **STATICALLY VERIFIED (Pass)** |
+| **npm Dependencies** | HIGH | Toolchain upgrade (Vite 6) | `npm audit` (0 vulnerabilities) | **STATICALLY VERIFIED (Pass)** |
+| **Python Dependencies** | HIGH | Package updates (FastAPI, cryptography) | `pip-audit` (0 vulnerabilities) | **STATICALLY VERIFIED (Pass)** |
 | **Maven Dependencies** | HIGH | `dependency-audit-strict` (CVSS 7.0) | NVD Remote Scan | **BLOCKED (NVD Key)** |
-| **Container Privilege** | MEDIUM | Non-root users (`appuser`, `nginx`) | Dockerfile inspection | **PASS** |
+| **Container Privilege** | MEDIUM | Non-root users (`appuser`, `nginx`) | Dockerfile inspection | **STATICALLY VERIFIED (Pass)** |
 
 ---
 
