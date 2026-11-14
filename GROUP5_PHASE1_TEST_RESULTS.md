@@ -99,7 +99,7 @@
 | :--- | :--- | :--- | :--- |
 | 1 | Decomposed Rendering: renders the header with Edge AI telemetry badge | PASS | 72ms |
 | 2 | Decomposed Rendering: renders the DailyOverviewTab with KPI ribbon and P&L financial metrics | PASS | 114ms |
-| 3 | Decomposed Rendering: renders CrowdForecastTab with peak hours and AI footfall quantile projections | PASS | 98ms |
+| 3 | Decomposed Rendering: renders CrowdForecastTab with peak hours and footfall quantile projections | PASS | 98ms |
 | 4 | Decomposed Rendering: renders MenuEngineeringTab with dish profitability | PASS | 86ms |
 | 5 | Decomposed Rendering: renders GuestReviewsTab with rating scorecards and review feed | PASS | 92ms |
 | 6 | Timeframe Navigation: switches between Daily, Weekly, and Monthly timeframes and refetches API overview | PASS | 682ms |

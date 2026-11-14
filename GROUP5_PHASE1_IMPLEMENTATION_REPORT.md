@@ -24,7 +24,7 @@ Phase 1 establishes a comprehensive, production-grade automated testing infrastr
    - `frontend/src/__tests__/Analytics.test.jsx`: 7 tests verifying decomposed tabs (`DailyOverviewTab`, `CrowdForecastTab`, `MenuEngineeringTab`, `GuestReviewsTab`), KPI cards, P&L breakdown, AI footfall quantile metrics (P10/P50/P90), timeframe switcher (Daily/Weekly/Monthly), and IndicBERT sentiment filtering.
    - `frontend/src/__tests__/api.test.js`: 16 tests verifying CSRF cookie extraction (`restro_csrf_token`), mutating request header injection (`X-CSRF-TOKEN`), `credentials: 'include'`, non-mutating exemption, legacy token storage purges, and automatic 401 token refresh retry flows.
 5. **Execution Verification**: 100% test pass rate (40 executed, 40 passed, 0 failed, 0 skipped).
-6. **Coverage Thresholds**: Critical-path components achieved 98.60% line coverage (target $\ge 80\%$).
+6. **Coverage Thresholds**: Critical-path components achieved 98.86% line coverage (1,903 / 1,925 lines, target $\ge 80\%$).
 7. **Production Build**: Verified clean production build (`npm run build`) with 0 errors and 0 warnings.
 
 ---
@@ -41,6 +41,10 @@ The testing stack was selected for maximum compatibility with the installed Vite
 | `@testing-library/user-event` | `14.5.2` | Realistic browser event simulations (clicks, keyboard typing, focus). |
 | `jsdom` | `24.0.0` | Browser DOM simulation for headless Node execution. |
 | `@vitest/coverage-v8` | `1.6.1` | High-performance V8 bytecode native coverage engine. |
+
+> [!NOTE]
+> **Vite 6 Compatibility Requirement (Tracked for BUG-022)**:
+> Current `vitest@1.6.1` has peer dependencies locked to Vite ^5.0.0. During BUG-022, when Vite is upgraded to a supported Vite 6 release, Vitest and `@vitest/coverage-v8` will be upgraded in lockstep to compatible releases (`vitest >= 2.1.x`) to maintain lockfile and peer compatibility.
 
 ### Environment Configuration:
 - **Node Version:** `v25.8.2`
@@ -82,9 +86,9 @@ The testing stack was selected for maximum compatibility with the installed Vite
 ### 3.3 Decomposed Analytics Suite (`frontend/src/__tests__/Analytics.test.jsx`)
 - **Decomposed Architecture**: Exercises all 5 sub-components: `AnalyticsHeader`, `DailyOverviewTab`, `CrowdForecastTab`, `MenuEngineeringTab`, and `GuestReviewsTab`.
 - **KPI Ribbon & P&L Attribution**: Validates revenue, profit margins, occupancy, COGS, payroll, and overheads.
-- **AI Forecasting & Telemetry**: Validates M8 LightGBM quantile projections (P10 Min, P50 Expected, P90 Rush) and automated staffing recommendations.
+- **Forecasting & Telemetry UI**: Validates quantile projections (P10 Min, P50 Expected, P90 Rush) and staffing recommendation cards.
 - **Timeframe Switching**: Verifies smooth transition between Daily (Today), Weekly (7 Days), and Monthly (30 Days) intervals.
-- **Sentiment Filter Pills**: Verifies NLP sentiment stream filtering (All, Positive, Neutral, Critical) based on IndicBERT categorization.
+- **Sentiment Filter Pills**: Verifies guest review stream filtering (All, Positive, Neutral, Critical) based on sentiment categorization.
 
 ### 3.4 API Interceptor & Security Suite (`frontend/src/__tests__/api.test.js`)
 - **Cookie Parsing**: Tests `getCsrfToken()` extracting `restro_csrf_token` from simple, multi-cookie, and URL-encoded `document.cookie` strings.

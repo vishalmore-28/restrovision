@@ -14,7 +14,7 @@
 > In accordance with Group 5 standards, **test execution pass rate (100.0%, 40/40 tests)** is explicitly decoupled from **code coverage percentages**. Furthermore, coverage is reported as both absolute fractions (`covered / total`) and percentages across all four v8 dimensions: Statements, Branches, Functions, and Lines.
 >
 > We distinguish:
-> 1. **Target Critical-Path Coverage (Phase 1 Scope)**: Target $\ge 80.0\%$ line coverage on core operational paths (Login, Public QR Portal, Decomposed Analytics Dashboard, API Security Interceptors). **Achieved: 98.60%**.
+> 1. **Target Critical-Path Coverage (Phase 1 Scope)**: Target $\ge 80.0\%$ line coverage on core operational paths (Login, Public QR Portal, Decomposed Analytics Dashboard, API Security Interceptors). **Achieved: 98.86% (1,903 / 1,925 lines)**.
 > 2. **Overall Project Total**: Includes legacy or untouched operational pages (AlertCenter, FloorPlan, KitchenKds, CamerasZones, CleaningTasks, WaiterDashboard) that are out of scope for Phase 1.
 
 ---
@@ -35,7 +35,7 @@
 | `src/pages/analytics/GuestReviewsTab.jsx` | 100.0% (243/243) | 100.0% (25/25) | 80.00% (4/5) | 100.0% (243/243) | **EXCEEDED (100%)** |
 | `src/pages/analytics/useAnalyticsData.js` | 98.79% (245/248) | 73.68% (14/19) | 100.0% (1/1) | 98.79% (245/248) | **EXCEEDED (98.8%)** |
 | `src/services/api.js` | 89.78% (167/186) | 69.23% (27/39) | 22.64% (12/53) | 89.78% (167/186) | **EXCEEDED (89.8%)** |
-| **Combined Target Critical Path** | **98.60% (1903/1930)** | **82.35% (154/187)** | **44.05% (37/84)** | **98.60% (1903/1930)** | **EXCEEDED ($\ge 80\%$)** |
+| **Combined Target Critical Path** | **98.86% (1903/1925)** | **82.80% (154/186)** | **45.78% (38/83)** | **98.86% (1903/1925)** | **EXCEEDED ($\ge 80\%$)** |
 
 ---
 
@@ -104,3 +104,12 @@ All files          |   38.94 |     79.5 |   39.42 |   38.94 |
 
 ### 4.3 Untracked Modules (Navbar, Sidebar, AlertCenter, FloorPlan, etc.)
 - These components are currently at 0% because Phase 1 was explicitly authorized for **BUG-021** (Login accessibility, Customer QR Portal, Analytics tabs, and CSRF interceptors). Subsequent test phases will expand coverage to remaining views.
+
+---
+
+## 5. Compatibility Requirement for Vite 6 Upgrade (Tracked for BUG-022)
+
+> [!IMPORTANT]
+> The current test infrastructure operates on `vitest@1.6.1` and `@vitest/coverage-v8@1.6.1`, which require `"vite": "^5.0.0"`.
+> During **BUG-022 (Production Dependency & Vulnerability Auditing)**, when Vite is upgraded to a supported release (e.g. Vite 6.x), Vitest and its coverage provider MUST be upgraded in lockstep to a compatible major release (e.g. `vitest >= 2.1.x` and `@vitest/coverage-v8 >= 2.1.x`) to maintain peer compatibility with Vite 6. This upgrade must be verified against Node `v25.8.2` and lockfile consistency.
+

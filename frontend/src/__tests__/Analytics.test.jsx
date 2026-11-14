@@ -45,11 +45,11 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
       expect(screen.getByText(/overheads & iot/i)).toBeInTheDocument();
     });
 
-    it('renders CrowdForecastTab with peak hours and AI footfall quantile projections', async () => {
+    it('renders CrowdForecastTab with peak hours and footfall quantile projections', async () => {
       render(<Analytics />);
 
       expect(screen.getByText(/crowd density & peak dining hours/i)).toBeInTheDocument();
-      expect(screen.getByText(/ai footfall forecast \(m8\)/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /footfall forecast/i })).toBeInTheDocument();
 
       // Quantile numbers from default mock
       expect(screen.getByText(/p10 \(min\): 120/i)).toBeInTheDocument();
@@ -74,7 +74,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
       render(<Analytics />);
 
       expect(screen.getByText(/guest ratings & category scores/i)).toBeInTheDocument();
-      expect(screen.getByText(/verified guest feedback stream \(indicbert nlp\)/i)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /verified guest feedback/i })).toBeInTheDocument();
       expect(screen.getByText(/food quality & taste/i)).toBeInTheDocument();
     });
   });
