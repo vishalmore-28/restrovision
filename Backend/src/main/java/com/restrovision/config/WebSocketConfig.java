@@ -26,6 +26,9 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Configuration
@@ -33,6 +36,9 @@ import java.util.stream.Collectors;
 @Order(Ordered.HIGHEST_PRECEDENCE + 99)
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     private static final Logger log = LoggerFactory.getLogger(WebSocketConfig.class);
+
+    private static final Set<String> GLOBAL_ALLOWED_DESTINATIONS = Set.of("/app/ping");
+    private static final Pattern TENANT_APP_DESTINATION_PATTERN = Pattern.compile("^/app/restaurants/(\\d+)/(ping|heartbeat)$");
 
     private final JwtTokenProvider tokenProvider;
 
@@ -147,39 +153,50 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         throw new AccessDeniedException("Access denied: SEND destination cannot be null or empty.");
                     }
 
-                    // Reject client-originated SEND operations to broker-managed /topic/** destinations
+                    // Security: Reject encoded path separators or path traversal sequences
+                    String lowerDest = destination.toLowerCase();
+                    if (lowerDest.contains("%2f") || lowerDest.contains("%5c") || destination.contains("..") || destination.contains("\\")) {
+                        log.warn("Blocked WebSocket SEND with encoded separators or path traversal: {}", destination);
+                        throw new AccessDeniedException("Access denied: Encoded path separators or directory traversal sequences are prohibited.");
+                    }
+
+                    // Reject client-originated SEND operations to all broker-managed /topic/** destinations
                     if (destination.startsWith("/topic/") || destination.equals("/topic")) {
                         log.warn("Blocked client-originated WebSocket SEND to broadcast topic: {}", destination);
                         throw new AccessDeniedException("Access denied: Direct publishing to broadcast topics is prohibited.");
                     }
 
-                    // Permit application messages through /app/** only
-                    if (!destination.startsWith("/app/") && !destination.equals("/app")) {
-                        log.warn("Blocked WebSocket SEND to unsupported destination: {}", destination);
+                    // Must start with /app/
+                    if (!destination.startsWith("/app/")) {
+                        log.warn("Blocked WebSocket SEND to unsupported destination prefix: {}", destination);
                         throw new AccessDeniedException("Access denied: Unsupported destination prefix for SEND. Must start with /app/.");
                     }
 
-                    // Enforce tenant isolation on tenant-scoped destinations (/app/restaurants/{id}/**)
+                    // Explicit allowlist evaluation
                     Long clientRestId = (Long) accessor.getSessionAttributes().get("restaurantId");
-                    if (destination.startsWith("/app/restaurants/")) {
-                        String[] parts = destination.split("/");
-                        if (parts.length >= 4) {
-                            try {
-                                Long targetRestId = Long.parseLong(parts[3]);
-                                if (!clientRestId.equals(targetRestId)) {
-                                    log.warn("Blocked cross-tenant WebSocket SEND: client tenant {} attempted to send to {}",
-                                            clientRestId, destination);
-                                    throw new AccessDeniedException("Access denied: Cross-tenant message dispatch to restaurant " + targetRestId + " is prohibited.");
-                                }
-                            } catch (NumberFormatException ex) {
-                                log.warn("Blocked malformed tenant ID in WebSocket SEND destination: {}", destination);
-                                throw new AccessDeniedException("Access denied: Malformed restaurant ID in destination.");
+                    if (GLOBAL_ALLOWED_DESTINATIONS.contains(destination)) {
+                        return message;
+                    }
+
+                    Matcher matcher = TENANT_APP_DESTINATION_PATTERN.matcher(destination);
+                    if (matcher.matches()) {
+                        try {
+                            Long targetRestId = Long.parseLong(matcher.group(1));
+                            if (!clientRestId.equals(targetRestId)) {
+                                log.warn("Blocked cross-tenant WebSocket SEND: client tenant {} attempted to send to {}",
+                                        clientRestId, destination);
+                                throw new AccessDeniedException("Access denied: Cross-tenant message dispatch to restaurant " + targetRestId + " is prohibited.");
                             }
-                        } else {
-                            log.warn("Blocked malformed /app/restaurants/ path in WebSocket SEND: {}", destination);
-                            throw new AccessDeniedException("Access denied: Malformed tenant destination path.");
+                            return message;
+                        } catch (NumberFormatException ex) {
+                            log.warn("Blocked malformed tenant ID in WebSocket SEND destination: {}", destination);
+                            throw new AccessDeniedException("Access denied: Malformed restaurant ID in destination.");
                         }
                     }
+
+                    // Reject unknown destinations by default
+                    log.warn("Blocked WebSocket SEND to unauthorized/unknown destination: {}", destination);
+                    throw new AccessDeniedException("Access denied: Destination '" + destination + "' is not an authorized client SEND endpoint.");
                 }
 
                 return message;

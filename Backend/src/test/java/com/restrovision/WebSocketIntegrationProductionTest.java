@@ -376,4 +376,45 @@ public class WebSocketIntegrationProductionTest {
         System.out.println("[Live STOMP Test] Verified: All 4 frontend subscriptions active and healthy.");
         session.disconnect();
     }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Strict allowlist rejects /app/users/profile, /app/admin/settings, /app/restaurants, /app/restaurants/1, malformed IDs, extra segments, and encoded separators")
+    void testUnauthorizedDestinationsRejectedByDefault() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        String[] forbiddenDestinations = {
+                "/app/users/profile",
+                "/app/admin/settings",
+                "/app/restaurants",
+                "/app/restaurants/1",
+                "/app/restaurants/abc/ping",
+                "/app/restaurants/-1/ping",
+                "/app/restaurants/1/ping/extra",
+                "/app/restaurants/1%2Fping",
+                "/app/restaurants/1%5Cping",
+                "/app/restaurants/1/../2/ping"
+        };
+
+        for (String forbiddenDest : forbiddenDestinations) {
+            StompHeaders connectHeaders = new StompHeaders();
+            connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+            CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+            org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+            stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+                @Override
+                public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                    sessionFuture.complete(session);
+                }
+            });
+
+            StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+            assertThat(session.isConnected()).isTrue();
+
+            session.send(forbiddenDest, "test payload");
+            Thread.sleep(300);
+            assertThat(session.isConnected()).isFalse();
+            System.out.println("[Live STOMP Test] Verified: SEND to '" + forbiddenDest + "' blocked, socket terminated.");
+        }
+    }
 }

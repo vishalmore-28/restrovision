@@ -666,5 +666,42 @@ class RestrovisionApplicationTests {
         assertThrows(AccessDeniedException.class, () ->
                 webSocketConfig.createSecurityInterceptor().preSend(nullMsg, null)
         );
+
+        // 6. Disallowed destinations tested systematically (Condition 5)
+        String[] forbidden = {
+                "/app/users/profile",
+                "/app/admin/settings",
+                "/app/restaurants",
+                "/app/restaurants/1",
+                "/app/restaurants/abc/ping",
+                "/app/restaurants/-1/ping",
+                "/app/restaurants/1/ping/extra",
+                "/app/restaurants/1%2Fping",
+                "/app/restaurants/1%5Cping",
+                "/app/restaurants/1/../2/ping"
+        };
+        for (String dest : forbidden) {
+            StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SEND);
+            accessor.setDestination(dest);
+            accessor.setUser(auth);
+            accessor.setSessionAttributes(sessionAttrs);
+            Message<?> msg = MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+            assertThrows(AccessDeniedException.class, () ->
+                    webSocketConfig.createSecurityInterceptor().preSend(msg, null)
+            );
+        }
+
+        // 7. Legitimate heartbeat and global ping succeed
+        StompHeaderAccessor hbSend = StompHeaderAccessor.create(StompCommand.SEND);
+        hbSend.setDestination("/app/restaurants/1/heartbeat");
+        hbSend.setUser(auth);
+        hbSend.setSessionAttributes(sessionAttrs);
+        assertThat(webSocketConfig.createSecurityInterceptor().preSend(MessageBuilder.createMessage(new byte[0], hbSend.getMessageHeaders()), null)).isNotNull();
+
+        StompHeaderAccessor globalPing = StompHeaderAccessor.create(StompCommand.SEND);
+        globalPing.setDestination("/app/ping");
+        globalPing.setUser(auth);
+        globalPing.setSessionAttributes(sessionAttrs);
+        assertThat(webSocketConfig.createSecurityInterceptor().preSend(MessageBuilder.createMessage(new byte[0], globalPing.getMessageHeaders()), null)).isNotNull();
     }
 }
