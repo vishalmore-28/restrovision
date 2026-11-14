@@ -36,6 +36,7 @@ The following granular commits represent the complete audit trail of the hardeni
 
 | Commit SHA | Commit Type | Scope / Defect | Commit Message Summary |
 | :--- | :---: | :---: | :--- |
+| `18b55d2` | `docs` | Audit Reports | `docs(audit): revise final reports to separate implementation from live runtime verification and qualify operational blockers` |
 | `a4b61d3` | `fix` | Production Security | `fix(security): enforce mandatory environment secrets in production Oracle profile without fallbacks` |
 | `e0b220f` | `docs` | Governance | `docs: record final documentation commit 841d29a in reconciliation log` |
 | `841d29a` | `docs` | Audit Reports | `docs(audit): publish final production readiness assessment, defect register, test reports, and operational checklists` |
