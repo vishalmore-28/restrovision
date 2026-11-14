@@ -85,7 +85,7 @@ The RESTROVISION v2.0 remediation programme identified an original register of 2
 | **NEW-002** | MEDIUM | `application-oracle.yml` | Hardcoded default service name `ORCLPDB1` mismatched local Oracle 26ai Free database service name `freepdb1`. | `82235f4` | **STATICALLY VERIFIED (Pass)** |
 | **NEW-003** | HIGH | `.github/workflows/` | Absence of automated CI/CD workflow definition. | `82235f4` | **STATICALLY VERIFIED (Pass)** |
 | **NEW-004** | HIGH | `application-oracle.yml` | Insecure default password fallback `password: ${ORACLE_PASSWORD:restrovision123}` in Oracle profile. | `a4b61d3` | **STATICALLY VERIFIED (Pass)** |
-| **NEW-005** | HIGH | `docker-compose.prod.yml`, `application-oracle.yml` | Lack of dual-account Oracle database segregation (migrator vs app) risking DDL execution from runtime app; absence of production compose with immutable tags and private network isolation. | Current Working Tree | **IMPLEMENTED & STATICALLY VERIFIED** |
+| **NEW-005** | HIGH | `docker-compose.prod.yml`, `application-oracle.yml` | Lack of dual-account Oracle database segregation (migrator vs app) risking DDL execution from runtime app; absence of production compose with immutable tags and private network isolation. | `1002960` | **IMPLEMENTED & STATICALLY VERIFIED** |
 
 ---
 

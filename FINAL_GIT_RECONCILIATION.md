@@ -36,6 +36,8 @@ The following granular commits represent the complete audit trail of the hardeni
 
 | Commit SHA | Commit Type | Scope / Defect | Commit Message Summary |
 | :--- | :---: | :---: | :--- |
+| `1002960` | `fix` | Production Deployment | `fix(deploy): enforce mandatory credentials, digest-pinned images, Flyway metadata isolation, and env variable reconciliation` |
+| `05b4dfd` | `docs` | Governance | `docs: record deployment hardening commit e2e2a65 in reconciliation log` |
 | `e2e2a65` | `fix` | Production Deployment | `fix(deploy): implement enterprise dual-account Oracle architecture, production Compose, and hardened operational runbook` |
 | `cb117b5` | `docs` | Governance | `docs: synchronize reconciliation log with commit 18b55d2` |
 | `18b55d2` | `docs` | Audit Reports | `docs(audit): revise final reports to separate implementation from live runtime verification and qualify operational blockers` |
