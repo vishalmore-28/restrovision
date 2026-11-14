@@ -33,4 +33,16 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: './src/setupTests.js',
+    css: false,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html', 'json-summary'],
+      include: ['src/services/**', 'src/context/**', 'src/pages/**', 'src/components/**', 'src/hooks/**'],
+      exclude: ['src/main.jsx', 'src/setupTests.js', 'src/**/__tests__/**'],
+    },
+  },
 });
