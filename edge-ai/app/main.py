@@ -31,8 +31,9 @@ MODEL_REGISTRY = [
     {"modelName": "person-detector", "version": "person-det-1.3.0", "task": "M1 Person Detector", "framework": "RTMDet / TensorRT-FP16", "status": "ACTIVE"},
     {"modelName": "table-state-classifier", "version": "table-cls-1.1.0", "task": "M3 Table State", "framework": "MobileNetV3 / ONNX", "status": "ACTIVE"},
     {"modelName": "gesture-classifier", "version": "gesture-conv-0.9.1", "task": "M4 Wave Gesture", "framework": "Keypoint Conv / PyTorch", "status": "ACTIVE"},
-    {"modelName": "sentiment-nlp", "version": "sentiment-indicbert-1.2.0", "task": "M10 Feedback Sentiment", "framework": "IndicBERT", "status": "ACTIVE"},
-    {"modelName": "traffic-forecaster", "version": "traffic-lgbm-1.0.0", "task": "M8 Traffic Quantiles", "framework": "LightGBM", "status": "ACTIVE"},
+    {"modelName": "sentiment-nlp", "version": "sentiment-lexicon-valence-1.1.0", "task": "M10 Feedback Sentiment", "framework": "Contextual Valence Lexicon", "status": "ACTIVE"},
+    {"modelName": "traffic-forecaster", "version": "traffic-seasonal-empirical-1.1.0", "task": "M8 Traffic Quantiles", "framework": "Empirical Residual Quantiles (Hyndman-Fan Type 7)", "status": "ACTIVE"},
+    {"modelName": "demand-forecaster", "version": "demand-recipe-heuristic-1.1.0", "task": "M9 Demand Forecaster", "framework": "Station BOM & Recipe Heuristic", "status": "ACTIVE"},
 ]
 
 # Request models

@@ -1,9 +1,14 @@
+"""
+RESTROVISION Edge AI — Demand Forecaster (BUG-020 Remediation)
+Provides dish order volume estimates and recommended prep batch sizes based on kitchen BOM recipe heuristics.
+"""
+
 from typing import List, Dict, Any
 
 def generate_demand_forecast(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Implements §8.2 M9 Demand Forecaster:
-    Predicts expected item order counts for kitchen station prep recommendations.
+    Predicts expected item order counts and batching sizes for kitchen station prep recommendations.
+    Uses bill-of-materials recipe heuristics and historic station ratios.
     """
     recommendations = []
     defaults = {
@@ -22,7 +27,8 @@ def generate_demand_forecast(items: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "name": name,
             "predictedOrders": info["predicted_orders"],
             "recommendedPrepBatch": info["prep_batch"],
-            "model_version": "demand-lgbm-1.1.0"
+            "model_version": "demand-recipe-heuristic-1.1.0",
+            "algorithm": "Station BOM & Recipe Heuristic"
         })
 
     return recommendations
