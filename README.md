@@ -112,63 +112,69 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ---
 
-### Option 2: Docker Compose (All Services Containerized)
+### Option 2: Production Docker Compose Deployment
 
 ```bash
-docker-compose up --build
+# 1. Copy environment template and fill in production secrets
+cp .env.example .env
+
+# 2. Build and launch all production containers (Backend, Frontend Nginx, Edge AI, Oracle DB)
+docker compose -f docker-compose.prod.yml up -d --build
 ```
-* Frontend: `http://localhost:5173` (or `http://localhost`)
+* Frontend: `http://localhost:80` (or your domain via Nginx)
 * Backend API: `http://localhost:8080`
 * Edge AI Service: `http://localhost:8000`
+* Oracle 23c/26ai Database: `localhost:1521` (Service: `freepdb1`)
+
+For full multi-cloud instructions and free hosting platform evaluations, see [Deployment Platforms Guide](file:///D:/RESTROVISION/docs/guides/DEPLOYMENT_PLATFORMS_GUIDE.md).
 
 ---
 
 ## 📂 Repository Layout
 
 ```
-restrovision/
-├── backend/                       # Spring Boot 3.3.5 Application
+RESTROVISION/
+├── Backend/                       # Spring Boot 3.3.5 Enterprise Microservice (Java 21)
 │   ├── pom.xml
 │   ├── Dockerfile
 │   └── src/main/java/com/restrovision/
-│       ├── config/                # Security, WebSocket STOMP, DataInitializer
-│       ├── domain/                # 22 JPA Entities matching Oracle v2.0 catalog
-│       ├── repository/            # Tenant-isolated Spring Data Repositories
+│       ├── config/                # Security, WebSocket STOMP, HikariCP, Flyway
+│       ├── domain/                # 22 JPA Entities (Hibernate 6 Oracle-hardened)
+│       ├── repository/            # Multi-tenant isolated Spring Data Repositories
 │       ├── service/               # State machine, AI ingestion, KDS, Workload
 │       ├── controller/            # REST controllers matching OpenAPI v1.0
-│       ├── dto/                   # Unified Envelope v1.0, Table & Order DTOs
 │       └── security/              # JWT provider, tenant filter, HMAC validator
-├── frontend/                      # React 18 + Tailwind CSS + Lucide Icons
+├── frontend/                      # React 18 + Vite + Tailwind CSS SPA
 │   ├── package.json
 │   ├── vite.config.js
-│   ├── tailwind.config.js
 │   ├── Dockerfile
 │   └── src/
-│       ├── components/            # Navbar, Sidebar, modals
-│       ├── context/               # AuthContext, quick persona switcher
+│       ├── components/            # Floor plan grid, modals, navbar, sidebar
+│       ├── context/               # AuthContext & role persona switcher
 │       ├── services/              # API fetch client & STOMP WebSocket client
-│       └── pages/                 # FloorPlan, AlertCenter, KitchenKds, Waiter,
-│                                  # Cleaning, CamerasZones, Analytics, QR Portal
-├── edge-ai/                       # Python 3.11 Edge AI Service
+│       └── pages/                 # FloorPlan, AlertCenter, KitchenKds, Waiter, etc.
+├── edge-ai/                       # Python 3.11 Edge AI Microservice
 │   ├── requirements.txt
 │   ├── Dockerfile
-│   ├── app/
-│   │   ├── main.py                # FastAPI endpoints (§9.1)
-│   │   ├── state/                 # TemporalTableStateEngine (§6.3)
-│   │   ├── events/                # SQLite WAL Outbox (§9.3), HMAC signer
-│   │   ├── forecast/              # M8 traffic & M9 demand forecasters
-│   │   └── nlp/                   # M10 feedback sentiment & topic classifier
-│   └── tests/                     # State engine & HMAC unit tests
-├── database/                      # Oracle 19c+ Production DDL & Seeds
+│   ├── app/                       # FastAPI, Temporal state engine, Outbox, Forecasters
+│   ├── scripts/                   # Camera launcher scripts
+│   └── tests/                     # Edge AI pytest test suite (53/53 passing)
+├── database/                      # Oracle Production Migrations & DDL
 │   ├── 01_RESTROVISION_Oracle_Core_Schema_v2.0.sql
 │   ├── 02_RESTROVISION_Oracle_Seed_Data.sql
 │   └── 03_RESTROVISION_Role_Permission_Matrix.csv
-├── docs/                          # Specifications & Event Schemas
-│   ├── RESTROVISION_OpenAPI_v1.0.yaml
-│   ├── RESTROVISION_AI_Event_Schema_v1.0.json
-│   └── RESTROVISION_Role_Permission_Matrix_v1.0.csv
-├── docker-compose.yml             # Full-stack composition
-└── package-zip.ps1                # Automated package & deliverables archive script
+├── docs/                          # Organized Documentation & Operational Runbooks
+│   ├── guides/                    # Deployment, camera, user manuals, and study guides
+│   │   ├── DEPLOYMENT_PLATFORMS_GUIDE.md   # Comprehensive free hosting guide (OCI, Vercel, Render)
+│   │   ├── CAMERA_DEPLOYMENT_GUIDE.md      # Edge camera hardware and RTSP setup
+│   │   ├── USER_MANUAL.md                  # Comprehensive staff & manager operating guide
+│   │   └── STUDY_GUIDE.md                  # Complete architectural and technical study guide
+│   ├── audit_reports/             # Complete audit trails, verification logs, and reports
+│   └── archive/                   # Preserved historical archives and legacy artifacts
+├── .env.example                   # Complete production environment variable template
+├── docker-compose.yml             # Development container composition
+├── docker-compose.prod.yml        # Turnkey production multi-container composition
+└── README.md                      # Project documentation and quick-start guide
 ```
 
 ---
