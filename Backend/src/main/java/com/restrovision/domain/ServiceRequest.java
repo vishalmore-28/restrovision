@@ -44,6 +44,10 @@ public class ServiceRequest {
     @Column(name = "assigned_employee_id")
     private Long assignedEmployeeId;
 
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
+
     public ServiceRequest() {}
 
     public Long getServiceRequestId() { return serviceRequestId; }
@@ -81,4 +85,7 @@ public class ServiceRequest {
 
     public Long getAssignedEmployeeId() { return assignedEmployeeId; }
     public void setAssignedEmployeeId(Long assignedEmployeeId) { this.assignedEmployeeId = assignedEmployeeId; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 }

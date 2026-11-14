@@ -44,6 +44,10 @@ public class StaffTask {
     @Column(name = "completed_at")
     private Instant completedAt;
 
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
+
     public StaffTask() {}
 
     public Long getTaskId() { return taskId; }
@@ -81,4 +85,7 @@ public class StaffTask {
 
     public Instant getCompletedAt() { return completedAt; }
     public void setCompletedAt(Instant completedAt) { this.completedAt = completedAt; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 }

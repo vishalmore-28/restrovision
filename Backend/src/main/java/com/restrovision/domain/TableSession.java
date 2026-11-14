@@ -44,6 +44,10 @@ public class TableSession {
     @Column(name = "pre_attended_flag")
     private Boolean preAttendedFlag = false;
 
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
+
     public TableSession() {}
 
     public TableSession(Long restaurantId, Long tableId, String openedBy, Integer partySizeEst) {
@@ -90,4 +94,7 @@ public class TableSession {
 
     public Boolean getPreAttendedFlag() { return preAttendedFlag; }
     public void setPreAttendedFlag(Boolean preAttendedFlag) { this.preAttendedFlag = preAttendedFlag; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 }

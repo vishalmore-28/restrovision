@@ -100,6 +100,9 @@ class RestrovisionApplicationTests {
     private ServiceRequestRepository serviceRequestRepository;
 
     @Autowired
+    private com.restrovision.repository.StaffTaskRepository staffTaskRepository;
+
+    @Autowired
     private CustomerFeedbackRepository feedbackRepository;
 
     @Autowired
@@ -2579,5 +2582,100 @@ class RestrovisionApplicationTests {
                 assertThat(c).contains("Max-Age=0");
             }
         }
+    }
+
+    @Test
+    @DisplayName("32: BUG-016: Optimistic locking version increments on TableSession updates and prevents concurrent lost updates")
+    void test32_TableSessionOptimisticLocking() {
+        TableSession session = new TableSession(1L, 1L, "STAFF", 4);
+        TableSession saved = sessionRepository.saveAndFlush(session);
+        assertThat(saved.getVersion()).isEqualTo(0L);
+
+        // First update increments version to 1
+        saved.setPartySizeEst(6);
+        TableSession updated1 = sessionRepository.saveAndFlush(saved);
+        assertThat(updated1.getVersion()).isEqualTo(1L);
+
+        // Simulate concurrent transaction with stale entity (version 0)
+        TableSession staleSession = new TableSession();
+        staleSession.setSessionId(updated1.getSessionId());
+        staleSession.setRestaurantId(updated1.getRestaurantId());
+        staleSession.setTableId(updated1.getTableId());
+        staleSession.setStatus(updated1.getStatus());
+        staleSession.setOpenedBy(updated1.getOpenedBy());
+        staleSession.setSeatedAt(updated1.getSeatedAt());
+        staleSession.setVersion(0L); // Stale version!
+
+        assertThrows(org.springframework.orm.ObjectOptimisticLockingFailureException.class, () -> {
+            sessionRepository.saveAndFlush(staleSession);
+        });
+    }
+
+    @Test
+    @DisplayName("33: BUG-016: Optimistic locking version increments on StaffTask and prevents concurrent collision")
+    void test33_StaffTaskOptimisticLocking() {
+        com.restrovision.domain.StaffTask task = new com.restrovision.domain.StaffTask();
+        task.setRestaurantId(1L);
+        task.setTableId(1L);
+        task.setTableCode("T01");
+        task.setTaskType("TABLE_CLEANING");
+        task.setStatus("OPEN");
+        task.setPriority("HIGH");
+        com.restrovision.domain.StaffTask saved = staffTaskRepository.saveAndFlush(task);
+        assertThat(saved.getVersion()).isEqualTo(0L);
+
+        // Update increments version
+        saved.setStatus("ASSIGNED");
+        saved.setAssignedEmployeeId(5L);
+        com.restrovision.domain.StaffTask updated1 = staffTaskRepository.saveAndFlush(saved);
+        assertThat(updated1.getVersion()).isEqualTo(1L);
+
+        // Stale update throws ObjectOptimisticLockingFailureException
+        com.restrovision.domain.StaffTask staleTask = new com.restrovision.domain.StaffTask();
+        staleTask.setTaskId(updated1.getTaskId());
+        staleTask.setRestaurantId(updated1.getRestaurantId());
+        staleTask.setTaskType(updated1.getTaskType());
+        staleTask.setStatus("CANCELLED");
+        staleTask.setPriority(updated1.getPriority());
+        staleTask.setCreatedAt(updated1.getCreatedAt());
+        staleTask.setVersion(0L); // Stale version!
+
+        assertThrows(org.springframework.orm.ObjectOptimisticLockingFailureException.class, () -> {
+            staffTaskRepository.saveAndFlush(staleTask);
+        });
+    }
+
+    @Test
+    @DisplayName("34: BUG-016: Optimistic locking version increments on ServiceRequest and prevents concurrent collision")
+    void test34_ServiceRequestOptimisticLocking() {
+        ServiceRequest req = new ServiceRequest();
+        req.setRestaurantId(1L);
+        req.setTableId(2L);
+        req.setTableCode("T02");
+        req.setRequestType("WATER");
+        req.setSource("QR");
+        req.setStatus("OPEN");
+        ServiceRequest saved = serviceRequestRepository.saveAndFlush(req);
+        assertThat(saved.getVersion()).isEqualTo(0L);
+
+        // Update increments version
+        saved.setStatus("ACKNOWLEDGED");
+        saved.setAssignedEmployeeId(4L);
+        ServiceRequest updated1 = serviceRequestRepository.saveAndFlush(saved);
+        assertThat(updated1.getVersion()).isEqualTo(1L);
+
+        // Stale update throws ObjectOptimisticLockingFailureException
+        ServiceRequest staleReq = new ServiceRequest();
+        staleReq.setServiceRequestId(updated1.getServiceRequestId());
+        staleReq.setRestaurantId(updated1.getRestaurantId());
+        staleReq.setRequestType(updated1.getRequestType());
+        staleReq.setSource(updated1.getSource());
+        staleReq.setStatus("COMPLETED");
+        staleReq.setCreatedAt(updated1.getCreatedAt());
+        staleReq.setVersion(0L); // Stale version!
+
+        assertThrows(org.springframework.orm.ObjectOptimisticLockingFailureException.class, () -> {
+            serviceRequestRepository.saveAndFlush(staleReq);
+        });
     }
 }
