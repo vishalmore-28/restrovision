@@ -38,6 +38,7 @@ public class AiEvent {
     private String eventType;
 
     @Column(name = "confidence")
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.NUMERIC)
     private Double confidence;
 
     @Column(name = "occurred_at", nullable = false)

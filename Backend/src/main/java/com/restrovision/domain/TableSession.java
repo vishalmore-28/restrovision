@@ -42,6 +42,7 @@ public class TableSession {
     private Integer partySizeEst;
 
     @Column(name = "pre_attended_flag")
+    @Convert(converter = org.hibernate.type.NumericBooleanConverter.class)
     private Boolean preAttendedFlag = false;
 
     @Version

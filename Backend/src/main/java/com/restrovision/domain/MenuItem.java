@@ -33,6 +33,7 @@ public class MenuItem {
     private Integer expectedPrepMinutes = 15;
 
     @Column(nullable = false, length = 1)
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.CHAR)
     private String available = "Y";
 
     public MenuItem() {}

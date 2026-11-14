@@ -22,6 +22,7 @@ public class MenuCategory {
     private Integer displayOrder = 0;
 
     @Column(nullable = false, length = 1)
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.CHAR)
     private String active = "Y";
 
     public MenuCategory() {}

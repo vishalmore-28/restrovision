@@ -7,6 +7,9 @@ spring:
     driver-class-name: oracle.jdbc.OracleDriver
     username: ${ORACLE_APP_USERNAME}
     password: ${ORACLE_APP_PASSWORD}
+    hikari:
+      data-source-properties:
+        includeSynonyms: true
   flyway:
     enabled: true
     baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
@@ -19,10 +22,13 @@ spring:
   jpa:
     open-in-view: false
     hibernate:
-      ddl-auto: validate
+      ddl-auto: ${HIBERNATE_DDL_AUTO:validate}
     properties:
       hibernate:
         dialect: org.hibernate.dialect.OracleDialect
+        synonyms: true
+        type:
+          preferred_instant_jdbc_type: TIMESTAMP
 
 # Production Security Requirements: Mandatory Environment Secrets (No Fallbacks)
 restrovision:
