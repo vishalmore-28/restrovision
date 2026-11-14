@@ -184,6 +184,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         throw new AccessDeniedException("Access denied: Valid authenticated principal is required.");
                     }
 
+                    if (!auth.isAuthenticated()) {
+                        log.warn("Blocked unauthenticated WebSocket subscription attempt by unauthenticated principal: {}", auth.getName());
+                        throw new AccessDeniedException("Access denied: Principal is not authenticated.");
+                    }
+
                     if (accessor.getSessionAttributes() == null || accessor.getSessionAttributes().get("restaurantId") == null) {
                         log.warn("Blocked subscription with missing tenant context: {}", accessor.getDestination());
                         throw new AccessDeniedException("Access denied: Missing tenant context in session.");

@@ -1,11 +1,12 @@
-# RESTROVISION v2.0 — Group 5 Phase 4 Final Security Verification Report
-## Defect Resolution: BUG-023 — WebSocket Subscription Lifecycle, Fail-Closed RBAC, Topic Allowlist & Principal Authority Verification
+# RESTROVISION v2.0 — Group 5 Phase 4 Final Authentication Verification Report
+## Defect Resolution: BUG-023 — WebSocket Subscription Lifecycle, Authenticated State Verification, Fail-Closed RBAC & Topic Allowlist
 
 - **Target Branch**: `feature/production-hardening`
 - **Starting Base Commit**: `f3ece62469553d7f009d1b90677d63c3d00732d4` (Phase 3 Final Reconciled Commit)
 - **Phase 4 Initial Commit**: `e4c4b74c86bfea8746b4c851c0641b4046884e61`
 - **Phase 4 Corrective Topic Allowlist Commit**: `eaa9266d08bb179d6ad76b3fa25121b948e8dac9`
-- **Phase 4 Final Security Correction Commit**: *Pending commit of this verification cycle*
+- **Phase 4 Fail-Closed RBAC Correction Commit**: `48a6b2a263d3f3d8d0f246a6135ed7df7c9de379`
+- **Phase 4 Final Authentication State Commit**: *Pending commit of this verification cycle*
 - **Protected Branch**: `main` strictly locked at `171171b08f6bd44f523f224d00c197624246613f`
 - **Execution Date**: November 14, 2026
 - **Status**: **SECURITY HARDENED & VERIFIED**
@@ -14,41 +15,35 @@
 
 ## 1. Executive Summary & Security Objectives
 
-Phase 4 of Group 5 implements and verifies **BUG-023: WebSocket Subscription Lifecycle & Authorization**. Following initial review of the topic allowlist and role-based access control, a security audit identified that `WebSocketConfig.java` previously contained a potential fail-open path if `Authentication` was null or possessed an empty authorities collection (which occurred when synthetic test mocks bypassed role checks).
+Phase 4 of Group 5 implements and verifies **BUG-023: WebSocket Subscription Lifecycle & Authorization**. Following user guidance on principal validation, this final security cycle hardens `WebSocketConfig.java` to explicitly require active authentication state:
 
-This final security cycle resolves that vulnerability by enforcing strict, fail-closed authorization across all WebSocket STOMP subscription attempts:
+`auth.isAuthenticated() == true`
 
-1. **Elimination of Fail-Open RBAC**:
-   - Replaced conditional checks with a mandatory 5-step enforcement pipeline:
-     1. Require a valid authenticated principal (`auth != null && auth.getName() != null && !auth.getName().trim().isEmpty()`).
-     2. Require at least one granted authority (`auth.getAuthorities() != null && !auth.getAuthorities().isEmpty()`).
-     3. Resolve the requested topic from the explicit allowlist (`tables`, `orders`, `tasks`, `alerts`).
-     4. Require an intersection between the principal's granted authorities and that topic's allowed roles.
-     5. Reject the subscription with an `AccessDeniedException` and terminate the session if any check fails.
-2. **Elimination of Synthetic Test Exceptions**:
-   - Production code contains zero mock/synthetic bypasses.
-   - Test fixtures in `RestrovisionApplicationTests.java` were updated to supply realistic role authorities (`ROLE_WAITER`, `ROLE_OWNER`) matching domain business rules.
-3. **Comprehensive Regression Testing**:
-   - Expanded live STOMP tests in `WebSocketIntegrationProductionTest.java` to 21 automated tests covering:
-     - Authenticated principal with empty authorities rejected and disconnected.
-     - Missing authentication (null principal) rejected.
-     - Authorized roles permitted on all four topics (`tables`, `orders`, `tasks`, `alerts`).
-     - Unauthorized roles rejected and disconnected.
-     - Cross-tenant and unapproved topics rejected and disconnected.
-4. **Multi-Stack Regression Execution**:
-   - 100% of tests passed across all tiers: **222 / 222 tests passed** (Backend 117/117, Frontend 52/52, Edge AI 53/53, Frontend production build clean).
+Even if an `Authentication` object possesses a non-empty name and otherwise permitted role authorities (such as `ROLE_OWNER`), any STOMP `SUBSCRIBE` frame presented with `isAuthenticated() == false` is unconditionally rejected with an `AccessDeniedException` and the STOMP session is terminated.
+
+### Full Enforcement Pipeline (In Order):
+1. **Require Valid Principal**: Non-null `Authentication` object with non-null and non-blank principal name.
+2. **Require Active Authenticated State**: `auth.isAuthenticated() == true`.
+3. **Require Tenant Context**: Session attributes must contain valid `restaurantId`.
+4. **Require Granted Authorities**: `auth.getAuthorities()` must be non-null and non-empty.
+5. **Enforce Tenant Isolation**: Subscription topic tenant ID must match session `restaurantId`.
+6. **Resolve Explicit Topic Allowlist**: Requested subtopic must match `tables`, `orders`, `tasks`, or `alerts`.
+7. **Role-Based Authorization Intersection**: Principal's authorities must intersect with the topic's required roles.
+8. **Fail-Closed Rejection**: If any check fails, throw `AccessDeniedException` and terminate session.
 
 ---
 
-## 2. Git State & Multi-Commit Lineage Reconciliation
+## 2. Git Commit Progression & Lineage
 
-### Commit Progression on `feature/production-hardening`:
+The complete commit progression on `feature/production-hardening` is audited below:
+
 1. `f3ece62469553d7f009d1b90677d63c3d00732d4`: Phase 3 Final Reconciled Commit (strict Maven dependency audit profile, KDS security tests, Python environment reconciliation).
 2. `e4c4b74c86bfea8746b4c851c0641b4046884e61`: Initial Phase 4 implementation (STOMP connection lifecycle, frontend WebSocket manager, keepalives, basic topic regex).
 3. `eaa9266d08bb179d6ad76b3fa25121b948e8dac9`: Corrective commit introducing the 4-topic allowlist and initial role mappings.
-4. Final Security Correction Commit: Eliminates fail-open RBAC, requires granted authorities on all subscriptions, removes synthetic-test exceptions from production code, updates test fixtures, and adds comprehensive 21-test live STOMP regression suite.
+4. `48a6b2a263d3f3d8d0f246a6135ed7df7c9de379`: Fail-closed RBAC correction commit (requiring authenticated principal with granted authorities, updating test fixtures, adding 21 live tests).
+5. **Final Authentication State Commit**: Extends principal verification with `auth.isAuthenticated() == true`, adds interceptor test verifying rejection of unauthenticated principals holding `ROLE_OWNER`, and confirms full 223/223 multi-stack regression.
 
-### Untracked User Artifact Preservation Audit:
+### Untracked User Artifact Preservation Audit
 All eight untracked paths remain strictly untouched and preserved in their original state:
 - `.agents/` (PRESERVED)
 - `.hallmark/` (PRESERVED)
@@ -63,15 +58,20 @@ The protected branch `main` remains locked at `171171b08f6bd44f523f224d00c197624
 
 ---
 
-## 3. Strict Fail-Closed Authorization Architecture
+## 3. Implementation Details: `WebSocketConfig.java`
 
-### 3.1. STOMP Subscription Pipeline (`WebSocketConfig.java`)
 ```java
 } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
     // 1. Require a valid authenticated principal
     if (accessor.getUser() == null || !(accessor.getUser() instanceof Authentication auth) || auth.getName() == null || auth.getName().trim().isEmpty()) {
         log.warn("Blocked unauthenticated WebSocket subscription attempt to {}", accessor.getDestination());
         throw new AccessDeniedException("Access denied: Valid authenticated principal is required.");
+    }
+
+    // 1b. Enforce active authenticated state
+    if (!auth.isAuthenticated()) {
+        log.warn("Blocked unauthenticated WebSocket subscription attempt by unauthenticated principal: {}", auth.getName());
+        throw new AccessDeniedException("Access denied: Principal is not authenticated.");
     }
 
     if (accessor.getSessionAttributes() == null || accessor.getSessionAttributes().get("restaurantId") == null) {
@@ -137,44 +137,35 @@ The protected branch `main` remains locked at `171171b08f6bd44f523f224d00c197624
 }
 ```
 
-### 3.2. Topic-to-Role Mapping & Domain Rationale
-| Permitted Subtopic | Allowed Roles | Domain Business Rationale |
-| :--- | :--- | :--- |
-| `tables` | `ROLE_OWNER`, `ROLE_MANAGER`, `ROLE_WAITER`, `ROLE_CLEANING` | Front-of-house table occupancy, turnover, and seating management. Back-of-house kitchen chefs are excluded. |
-| `orders` | `ROLE_OWNER`, `ROLE_MANAGER`, `ROLE_WAITER`, `ROLE_KITCHEN` | Kitchen order queue and status transitions. Housekeeping/cleaning staff are excluded. |
-| `tasks` | `ROLE_OWNER`, `ROLE_MANAGER`, `ROLE_WAITER`, `ROLE_CLEANING` | Operational staff task assignments and housekeeping requests. |
-| `alerts` | `ROLE_OWNER`, `ROLE_MANAGER`, `ROLE_WAITER`, `ROLE_KITCHEN`, `ROLE_CLEANING` | Universal restaurant-wide urgent broadcast alerts. |
-| *All others* (`/admin`, `/payroll`, etc.) | *None (Blocked)* | Unapproved subtopics are blocked unconditionally. |
-
 ---
 
-## 4. Live STOMP Integration Verification Evidence
+## 4. Live STOMP Regression Testing Evidence
 
-The live STOMP integration suite in `WebSocketIntegrationProductionTest.java` was expanded to **21 live tests**:
+The live STOMP test suite in `WebSocketIntegrationProductionTest.java` was expanded to **22 tests**:
 
 ```text
 [INFO] Running com.restrovision.WebSocketIntegrationProductionTest
 ...
-2026-11-14T23:36:18.882+05:30  WARN 20028 --- [restrovision-backend] [o-auto-1-exec-1] c.restrovision.config.WebSocketConfig    : Blocked subscription: User emptyroles@restrovision.local has no granted authorities
-2026-11-14T23:36:18.882+05:30 ERROR 20028 --- [restrovision-backend] [o-auto-1-exec-1] o.s.w.s.m.StompSubProtocolHandler        : Failed to send message to MessageChannel in session 01c20504-c984-63b4-72b9-987e2316d8d7:Failed to send message to ExecutorSubscribableChannel[clientInboundChannel]
+2026-11-14T23:42:08.964+05:30  WARN 17340 --- [restrovision-backend] [           main] c.restrovision.config.WebSocketConfig    : Blocked unauthenticated WebSocket subscription attempt by unauthenticated principal: owner@restrovision.local
+[Live STOMP Interceptor Test] Verified: Unauthenticated principal with valid authorities rejected on SUBSCRIBE.
+2026-11-14T23:42:08.978+05:30  WARN 17340 --- [restrovision-backend] [o-auto-1-exec-2] c.restrovision.config.WebSocketConfig    : Blocked subscription: User emptyroles@restrovision.local has no granted authorities
 [Live STOMP Test] Verified: User with empty authorities blocked from subscription, session terminated.
-2026-11-14T23:36:19.302+05:30  WARN 20028 --- [restrovision-backend] [o-auto-1-exec-2] c.restrovision.config.WebSocketConfig    : Blocked subscription: User cleaning@restrovision.local lacks required role for topic /topic/restaurants/1/orders
+2026-11-14T23:42:09.392+05:30  WARN 17340 --- [restrovision-backend] [o-auto-1-exec-3] c.restrovision.config.WebSocketConfig    : Blocked subscription: User cleaning@restrovision.local lacks required role for topic /topic/restaurants/1/orders
 [Live STOMP Test] Verified: CLEANING role attempting to subscribe to /orders blocked, session terminated.
-2026-11-14T23:36:19.710+05:30  WARN 20028 --- [restrovision-backend] [o-auto-1-exec-7] c.restrovision.config.WebSocketConfig    : Blocked subscription: User chef@restrovision.local lacks required role for topic /topic/restaurants/1/tables
+2026-11-14T23:42:09.802+05:30  WARN 17340 --- [restrovision-backend] [o-auto-1-exec-7] c.restrovision.config.WebSocketConfig    : Blocked subscription: User chef@restrovision.local lacks required role for topic /topic/restaurants/1/tables
 [Live STOMP Test] Verified: KITCHEN role attempting to subscribe to /tables blocked, session terminated.
-2026-11-14T23:36:20.126+05:30  INFO 20028 --- [restrovision-backend] [-auto-1-exec-10] c.restrovision.config.WebSocketConfig    : WebSocket STOMP authenticated for owner@restrovision.local (Restaurant ID: 1)
-[Live STOMP Test] Valid Token session established: Session ID = b1e5d453-1f68-a3b9-2f22-505337d8458d
+2026-11-14T23:42:10.214+05:30  INFO 17340 --- [restrovision-backend] [o-auto-1-exec-1] c.restrovision.config.WebSocketConfig    : WebSocket STOMP authenticated for owner@restrovision.local (Restaurant ID: 1)
+[Live STOMP Test] Valid Token session established: Session ID = 70d06f07-0963-d7ba-7b91-c36b630c09e1
 [Live STOMP Test] Same-tenant subscription to /topic/restaurants/1/tables confirmed active.
-2026-11-14T23:36:20.645+05:30  INFO 20028 --- [restrovision-backend] [o-auto-1-exec-2] c.restrovision.config.WebSocketConfig    : WebSocket STOMP authenticated for chef@restrovision.local (Restaurant ID: 1)
+2026-11-14T23:42:10.727+05:30  INFO 17340 --- [restrovision-backend] [o-auto-1-exec-5] c.restrovision.config.WebSocketConfig    : WebSocket STOMP authenticated for chef@restrovision.local (Restaurant ID: 1)
 [Live STOMP Test] Verified: KITCHEN role subscribing to /orders allowed and active.
-2026-11-14T23:36:21.058+05:30  INFO 20028 --- [restrovision-backend] [o-auto-1-exec-8] c.restrovision.config.WebSocketConfig    : WebSocket STOMP authenticated for cleaning@restrovision.local (Restaurant ID: 1)
+2026-11-14T23:42:11.136+05:30  INFO 17340 --- [restrovision-backend] [o-auto-1-exec-9] c.restrovision.config.WebSocketConfig    : WebSocket STOMP authenticated for cleaning@restrovision.local (Restaurant ID: 1)
 [Live STOMP Test] Verified: CLEANING role subscribing to /tasks allowed and active.
-[Live STOMP Test] Verified: All four legitimate topics successfully subscribed by authorized roles.
-[INFO] Tests run: 21, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 31.91 s -- in com.restrovision.WebSocketIntegrationProductionTest
+[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 32.53 s -- in com.restrovision.WebSocketIntegrationProductionTest
 [INFO] BUILD SUCCESS
 ```
 
-### Full Inventory of Live STOMP Scenarios Verified:
+### Full 22-Scenario STOMP Inventory:
 1. `testLiveAnonymousStompConnectionRejected` — Anonymous STOMP CONNECT without Authorization header rejected.
 2. `testLiveValidStompConnectionAccepted` — Valid JWT authenticates and establishes session.
 3. `testLiveExpiredStompConnectionRejected` — Expired JWT token in CONNECT rejected.
@@ -191,93 +182,67 @@ The live STOMP integration suite in `WebSocketIntegrationProductionTest.java` wa
 14. `testInvalidSameTenantTopicsBlocked` — `/admin`, `/payroll`, `/sensitive-data`, `/financials`, `/internal` blocked.
 15. `testUnauthorizedRoleAttemptingRestrictedTopicBlocked` — `CLEANING` on `/orders` blocked; `KITCHEN` on `/tables` blocked.
 16. `testAuthorizedRolesForSpecificTopicsSucceed` — `KITCHEN` on `/orders` succeeds; `CLEANING` on `/tasks` succeeds.
-17. `testLiveEmptyAuthoritiesPrincipalCannotSubscribe` — **(NEW)** Valid token with empty roles blocked from subscription and session terminated.
-18. `testMissingAuthenticationOrAuthoritiesRejectedByInterceptor` — **(NEW)** Interceptor directly asserts `AccessDeniedException` on null principal or empty authorities.
-19. `testAllFourLegitimateTopicsAccessibleToAuthorizedRoles` — **(NEW)** Proves `tables` (WAITER), `orders` (KITCHEN), `tasks` (CLEANING), and `alerts` (OWNER) all succeed and remain active.
+17. `testLiveEmptyAuthoritiesPrincipalCannotSubscribe` — Valid token with empty roles blocked from subscription and session terminated.
+18. `testMissingAuthenticationOrAuthoritiesRejectedByInterceptor` — Interceptor asserts `AccessDeniedException` on null principal or empty authorities.
+19. `testUnauthenticatedPrincipalWithAuthoritiesRejectedByInterceptor` — **(NEW)** Interceptor asserts `AccessDeniedException` when `isAuthenticated() == false` even with valid `ROLE_OWNER` and name.
+20. `testAllFourLegitimateTopicsAccessibleToAuthorizedRoles` (tables) — Proves `tables` accessible to `WAITER`.
+21. `testAllFourLegitimateTopicsAccessibleToAuthorizedRoles` (orders & tasks) — Proves `orders` accessible to `KITCHEN` and `tasks` accessible to `CLEANING`.
+22. `testAllFourLegitimateTopicsAccessibleToAuthorizedRoles` (alerts) — Proves `alerts` accessible to `OWNER`.
 
 ---
 
-## 5. Multi-Stack Regression Verification Results
+## 5. Fresh Multi-Stack Regression Verification Results
 
-Fresh regression runs were conducted across all stacks without reusing prior evidence:
+All suites were freshly executed without reusing prior execution evidence:
 
 ### 5.1. Backend Suite (Maven)
 - **Command**: `mvn test`
-- **Results**: **117 Tests Run, 0 Failures, 0 Errors, 0 Skipped (100% Pass Rate)**
-- **Duration**: 54.68 seconds
+- **Results**: **118 Tests Run, 0 Failures, 0 Errors, 0 Skipped (100% Pass Rate)**
+- **Duration**: 55.21 seconds
 - **Test Classes**:
   1. `EdgeSecurityProductionVerificationTest` (6 tests) — PASSED
   2. `MenuOptimizationProductionIntegrationTest` (10 tests) — PASSED
   3. `OfflineSyncProductionIntegrationTest` (20 tests) — PASSED
   4. `OsivAndLazyLoadingEndpointProductionTest` (12 tests) — PASSED
   5. `OwnerDashboardProductionIntegrationTest` (19 tests) — PASSED
-  6. `RestrovisionApplicationTests` (29 tests, with realistic `ROLE_*` authorities in test 27 & 28) — PASSED
-  7. `WebSocketIntegrationProductionTest` (21 tests) — PASSED
+  6. `RestrovisionApplicationTests` (29 tests) — PASSED
+  7. `WebSocketIntegrationProductionTest` (22 tests) — PASSED
 
 ### 5.2. Frontend Suite (Vitest)
 - **Command**: `npm run test`
 - **Results**: **5 Test Files, 52 Tests Run, 0 Failures (100% Pass Rate)**
-- **Duration**: 4.75 seconds
-- **Test Files**:
-  1. `src/__tests__/api.test.js` (16 tests) — PASSED
-  2. `src/__tests__/websocket.test.jsx` (12 tests) — PASSED
-  3. `src/__tests__/CustomerQrPortal.test.jsx` (9 tests) — PASSED
-  4. `src/__tests__/Analytics.test.jsx` (7 tests) — PASSED
-  5. `src/__tests__/Login.test.jsx` (8 tests) — PASSED
+- **Duration**: 4.18 seconds
 
 ### 5.3. Frontend Production Build (Vite 6.4.6)
 - **Command**: `npm run build`
 - **Results**: **SUCCESS (0 errors)**
-- **Duration**: 5.34 seconds
-- **Artifacts**:
-  - `dist/index.html`: 0.86 kB (gzip: 0.54 kB)
-  - `dist/assets/index-D4ZP3MJt.css`: 35.74 kB (gzip: 7.19 kB)
-  - `dist/assets/index-DFW2rijH.js`: 330.15 kB (gzip: 84.37 kB)
+- **Duration**: 4.10 seconds
 
 ### 5.4. Edge AI Suite (Pytest)
 - **Command**: `python -m pytest -v`
 - **Results**: **53 Tests Run, 53 Passed, 0 Failures (100% Pass Rate)**
-- **Duration**: 1.09 seconds
-- **Modules**:
-  1. `tests/test_api_endpoints.py` (9 tests) — PASSED
-  2. `tests/test_forecast.py` (19 tests) — PASSED
-  3. `tests/test_sentiment.py` (21 tests) — PASSED
-  4. `tests/test_state_engine.py` (4 tests) — PASSED
+- **Duration**: 0.85 seconds
 
 ### 5.5. Aggregate Test Metrics
 | Subsystem | Framework | Total Tests | Passed | Failed | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Backend** | JUnit 5 / Spring Boot Test | 117 | 117 | 0 | **PASS (100%)** |
+| **Backend** | JUnit 5 / Spring Boot Test | 118 | 118 | 0 | **PASS (100%)** |
 | **Frontend** | Vitest / RTL | 52 | 52 | 0 | **PASS (100%)** |
 | **Frontend Build** | Vite 6.4.6 | 1,613 modules | Built | 0 | **PASS (100%)** |
 | **Edge AI** | Pytest / TestClient | 53 | 53 | 0 | **PASS (100%)** |
-| **Total** | Multi-Stack Automated Suite | **222** | **222** | **0** | **100% PASS** |
+| **Total** | Multi-Stack Automated Suite | **223** | **223** | **0** | **100% PASS** |
 
 ---
 
-## 6. Operational Guidance & Remaining Limitations
-
-1. **In-Memory SimpleBroker**:
-   - `enableSimpleBroker("/topic")` operates in-memory on a single JVM node. For multi-node cloud clusters with load balancers, configure `enableStompBrokerRelay()` with an external broker (e.g. RabbitMQ with STOMP plugin).
-2. **Reconnection & Refresh Token Workflow**:
-   - The frontend client automatically reconnects with freshly refreshed JWTs upon network recovery or disconnection.
-3. **Heartbeat Tuning**:
-   - 10-second client/server heartbeats reclaim orphaned TCP sockets across intermediate NAT firewalls and cloud ALBs.
-
----
-
-## 7. Final Git Status & Verification Sign-Off
+## 6. Final Git Status & Verification Sign-Off
 
 - **Active branch**: `feature/production-hardening`
 - **Starting Base Commit**: `f3ece62469553d7f009d1b90677d63c3d00732d4`
 - **Initial Phase 4 Commit**: `e4c4b74c86bfea8746b4c851c0641b4046884e61`
 - **Corrective Topic Allowlist Commit**: `eaa9266d08bb179d6ad76b3fa25121b948e8dac9`
+- **Fail-Closed RBAC Correction Commit**: `48a6b2a263d3f3d8d0f246a6135ed7df7c9de379`
+- **Final Authentication State Commit**: *Pending commit of this verification cycle*
 - **Protected Branch**: `main` strictly locked at `171171b08f6bd44f523f224d00c197624246613f`
-- **Files Modified for Final Security Correction**:
-  - `Backend/src/main/java/com/restrovision/config/WebSocketConfig.java`
-  - `Backend/src/test/java/com/restrovision/RestrovisionApplicationTests.java`
-  - `Backend/src/test/java/com/restrovision/WebSocketIntegrationProductionTest.java`
-  - `GROUP5_PHASE4_FINAL_VERIFICATION_REPORT.md`
 - **Untracked Artifacts**: All 8 user paths preserved without alteration.
 
 **STOP GATE NOTICE**: All implementations and multi-stack verifications for BUG-023 are complete. Work is halted at this verification gate awaiting user review.

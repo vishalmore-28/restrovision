@@ -14,6 +14,7 @@ import org.springframework.messaging.simp.stomp.*;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
@@ -801,6 +802,29 @@ public class WebSocketIntegrationProductionTest {
         assertThrows(AccessDeniedException.class, () ->
                 webSocketConfig.createSecurityInterceptor().preSend(emptyAuthMsg, null)
         );
+    }
+
+    @Test
+    @DisplayName("WebSocket Security Interceptor: Unauthenticated principal with valid authorities is rejected")
+    void testUnauthenticatedPrincipalWithAuthoritiesRejectedByInterceptor() {
+        // Principal with non-empty name, ROLE_OWNER authority, but isAuthenticated() == false
+        UsernamePasswordAuthenticationToken unauthenticatedToken =
+                new UsernamePasswordAuthenticationToken("owner@restrovision.local", "credentials", List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
+        unauthenticatedToken.setAuthenticated(false);
+        assertThat(unauthenticatedToken.isAuthenticated()).isFalse();
+        assertThat(unauthenticatedToken.getName()).isEqualTo("owner@restrovision.local");
+        assertThat(unauthenticatedToken.getAuthorities()).isNotEmpty();
+
+        StompHeaderAccessor accessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        accessor.setDestination("/topic/restaurants/1/tables");
+        accessor.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 1L)));
+        accessor.setUser(unauthenticatedToken);
+        Message<?> msg = MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
+
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(msg, null)
+        );
+        System.out.println("[Live STOMP Interceptor Test] Verified: Unauthenticated principal with valid authorities rejected on SUBSCRIBE.");
     }
 
     @Test
