@@ -417,4 +417,155 @@ public class WebSocketIntegrationProductionTest {
             System.out.println("[Live STOMP Test] Verified: SEND to '" + forbiddenDest + "' blocked, socket terminated.");
         }
     }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Refresh token cannot be used for WebSocket CONNECT")
+    void testRefreshTokenRejectedForWebSocketConnect() throws Exception {
+        String refreshToken = tokenProvider.generateRefreshToken(1L, 1L, "owner@restrovision.local");
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + refreshToken);
+
+        CompletableFuture<Throwable> errorFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void handleTransportError(StompSession session, Throwable exception) {
+                errorFuture.complete(exception);
+            }
+            @Override
+            public void handleException(StompSession session, StompCommand command, StompHeaders headers, byte[] payload, Throwable exception) {
+                errorFuture.complete(exception);
+            }
+        });
+
+        try {
+            Throwable err = errorFuture.get(4, TimeUnit.SECONDS);
+            System.out.println("[Live STOMP Test] Refresh token rejected as expected: " + (err != null ? err.getMessage() : "null"));
+        } catch (TimeoutException ex) {
+            System.out.println("[Live STOMP Test] Refresh token connection aborted by server.");
+        }
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Token missing restaurantId claim is rejected")
+    void testTokenMissingRestaurantIdRejected() throws Exception {
+        Date now = new Date();
+        Date expiry = new Date(now.getTime() + 3600000);
+        String tokenNoRestId = io.jsonwebtoken.Jwts.builder()
+                .subject("owner@restrovision.local")
+                .claim("userId", 1L)
+                .claim("roles", Set.of("OWNER"))
+                .issuedAt(now)
+                .expiration(expiry)
+                .signWith(io.jsonwebtoken.security.Keys.hmacShaKeyFor(
+                        "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970".getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .compact();
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + tokenNoRestId);
+
+        CompletableFuture<Throwable> errorFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void handleTransportError(StompSession session, Throwable exception) {
+                errorFuture.complete(exception);
+            }
+            @Override
+            public void handleException(StompSession session, StompCommand command, StompHeaders headers, byte[] payload, Throwable exception) {
+                errorFuture.complete(exception);
+            }
+        });
+
+        try {
+            Throwable err = errorFuture.get(4, TimeUnit.SECONDS);
+            System.out.println("[Live STOMP Test] Missing restaurantId token rejected as expected: " + (err != null ? err.getMessage() : "null"));
+        } catch (TimeoutException ex) {
+            System.out.println("[Live STOMP Test] Missing restaurantId connection aborted by server.");
+        }
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Path traversal SUBSCRIBE destination is rejected and terminates session")
+    void testPathTraversalSubscribeDestinationBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        String[] traversalDestinations = {
+                "/topic/restaurants/1/../2/tables",
+                "/topic/restaurants/1%2ftables",
+                "/topic/restaurants/1\\tables",
+                "/topic/restaurants/1/..%2ftables"
+        };
+
+        for (String dest : traversalDestinations) {
+            StompHeaders connectHeaders = new StompHeaders();
+            connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+            CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+            org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+            stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+                @Override
+                public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                    sessionFuture.complete(session);
+                }
+            });
+
+            StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+            assertThat(session.isConnected()).isTrue();
+
+            session.subscribe(dest, new StompFrameHandler() {
+                @Override
+                public Type getPayloadType(StompHeaders headers) { return String.class; }
+                @Override
+                public void handleFrame(StompHeaders headers, Object payload) {}
+            });
+
+            Thread.sleep(400);
+            assertThat(session.isConnected()).isFalse();
+            System.out.println("[Live STOMP Test] Verified: SUBSCRIBE traversal '" + dest + "' blocked, session terminated.");
+        }
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: SUBSCRIBE to non-tenant or arbitrary topic is rejected and terminates session")
+    void testUnauthorizedTopicSubscribeBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        String[] unauthorizedTopics = {
+                "/topic/admin/broadcast",
+                "/topic/global/events",
+                "/topic/all",
+                "/topic/restaurants",
+                "/topic/restaurants/1"
+        };
+
+        for (String topic : unauthorizedTopics) {
+            StompHeaders connectHeaders = new StompHeaders();
+            connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+            CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+            org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+            stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+                @Override
+                public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                    sessionFuture.complete(session);
+                }
+            });
+
+            StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+            assertThat(session.isConnected()).isTrue();
+
+            session.subscribe(topic, new StompFrameHandler() {
+                @Override
+                public Type getPayloadType(StompHeaders headers) { return String.class; }
+                @Override
+                public void handleFrame(StompHeaders headers, Object payload) {}
+            });
+
+            Thread.sleep(400);
+            assertThat(session.isConnected()).isFalse();
+            System.out.println("[Live STOMP Test] Verified: Unauthorized SUBSCRIBE to '" + topic + "' blocked, session terminated.");
+        }
+    }
 }

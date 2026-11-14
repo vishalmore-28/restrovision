@@ -46,6 +46,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private static final Set<String> GLOBAL_ALLOWED_DESTINATIONS = Set.of("/app/ping");
     private static final Pattern TENANT_APP_DESTINATION_PATTERN = Pattern.compile("^/app/restaurants/(\\d+)/(ping|heartbeat)$");
+    private static final Pattern TENANT_TOPIC_DESTINATION_PATTERN = Pattern.compile("^/topic/restaurants/(\\d+)(?:/[a-zA-Z0-9_-]+)+$");
 
     private final JwtTokenProvider tokenProvider;
 
@@ -174,25 +175,33 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     }
 
                     String destination = accessor.getDestination();
-                    if (destination == null) {
-                        throw new AccessDeniedException("Access denied: Subscription destination cannot be null.");
+                    if (destination == null || destination.trim().isEmpty()) {
+                        throw new AccessDeniedException("Access denied: Subscription destination cannot be null or empty.");
+                    }
+
+                    // Security: Reject encoded path separators or path traversal sequences
+                    String lowerDest = destination.toLowerCase();
+                    if (lowerDest.contains("%2f") || lowerDest.contains("%5c") || destination.contains("..") || destination.contains("\\")) {
+                        log.warn("Blocked WebSocket SUBSCRIBE with encoded separators or path traversal: {}", destination);
+                        throw new AccessDeniedException("Access denied: Encoded path separators or directory traversal sequences are prohibited.");
+                    }
+
+                    Matcher matcher = TENANT_TOPIC_DESTINATION_PATTERN.matcher(destination);
+                    if (!matcher.matches()) {
+                        log.warn("Blocked WebSocket SUBSCRIBE to unauthorized destination format: {}", destination);
+                        throw new AccessDeniedException("Access denied: Unauthorized subscription destination.");
                     }
 
                     Long clientRestId = (Long) accessor.getSessionAttributes().get("restaurantId");
-                    if (destination.startsWith("/topic/restaurants/")) {
-                        String[] parts = destination.split("/");
-                        if (parts.length >= 4) {
-                            try {
-                                Long targetRestId = Long.parseLong(parts[3]);
-                                if (!clientRestId.equals(targetRestId)) {
-                                    log.warn("Blocked cross-tenant WebSocket subscription: client tenant {} attempted to subscribe to {}",
-                                            clientRestId, destination);
-                                    throw new AccessDeniedException("Access denied: Cross-tenant subscription to restaurant " + targetRestId + " is prohibited.");
-                                }
-                            } catch (NumberFormatException ex) {
-                                throw new AccessDeniedException("Access denied: Malformed restaurant topic destination.");
-                            }
+                    try {
+                        Long targetRestId = Long.parseLong(matcher.group(1));
+                        if (!clientRestId.equals(targetRestId)) {
+                            log.warn("Blocked cross-tenant WebSocket subscription: client tenant {} attempted to subscribe to {}",
+                                    clientRestId, destination);
+                            throw new AccessDeniedException("Access denied: Cross-tenant subscription to restaurant " + targetRestId + " is prohibited.");
                         }
+                    } catch (NumberFormatException ex) {
+                        throw new AccessDeniedException("Access denied: Malformed restaurant topic destination.");
                     }
 
                 } else if (StompCommand.SEND.equals(accessor.getCommand())) {
