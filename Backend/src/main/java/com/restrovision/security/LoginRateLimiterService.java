@@ -89,8 +89,23 @@ public class LoginRateLimiterService {
     }
 
     public RateLimitResult checkLimit(String clientIp, String normalizedEmail) {
+        cleanOldEntries();
         Instant now = Instant.now();
         Instant cutoff = now.minusSeconds(windowSeconds);
+
+        // 0. Fail-closed defense under all-blocked saturation:
+        // If the cache is at/above capacity and all existing entries are actively blocked (no safe eviction candidates),
+        // do not admit new unmetered identities. Fail closed to prevent unbounded heap growth and DoS bypass.
+        if (clientIp != null && !clientIp.isBlank() && !ipAttempts.containsKey(clientIp)
+                && ipAttempts.size() >= MAX_CAPACITY && isAllBlocked(ipAttempts, maxAttemptsPerIp)) {
+            log.warn("Login limiter IP cache saturated (all {} entries actively blocked). Failing closed for new IP {}", MAX_CAPACITY, clientIp);
+            return new RateLimitResult(true, windowSeconds);
+        }
+        if (normalizedEmail != null && !normalizedEmail.isBlank() && !accountAttempts.containsKey(normalizedEmail)
+                && accountAttempts.size() >= MAX_CAPACITY && isAllBlocked(accountAttempts, maxAttemptsPerAccount)) {
+            log.warn("Login limiter account cache saturated (all {} entries actively blocked). Failing closed for new account {}", MAX_CAPACITY, normalizedEmail);
+            return new RateLimitResult(true, windowSeconds);
+        }
 
         // 1. Check IP-level rate limiting
         if (clientIp != null && !clientIp.isBlank()) {
@@ -129,20 +144,24 @@ public class LoginRateLimiterService {
         Instant now = Instant.now();
         Instant cutoff = now.minusSeconds(windowSeconds);
         if (clientIp != null && !clientIp.isBlank()) {
-            ipAttempts.compute(clientIp, (k, deque) -> {
-                if (deque == null) deque = new ConcurrentLinkedDeque<>();
-                prune(deque, cutoff);
-                deque.addLast(now);
-                return deque;
-            });
+            if (ipAttempts.containsKey(clientIp) || ipAttempts.size() < MAX_CAPACITY || !isAllBlocked(ipAttempts, maxAttemptsPerIp)) {
+                ipAttempts.compute(clientIp, (k, deque) -> {
+                    if (deque == null) deque = new ConcurrentLinkedDeque<>();
+                    prune(deque, cutoff);
+                    deque.addLast(now);
+                    return deque;
+                });
+            }
         }
         if (normalizedEmail != null && !normalizedEmail.isBlank()) {
-            accountAttempts.compute(normalizedEmail, (k, deque) -> {
-                if (deque == null) deque = new ConcurrentLinkedDeque<>();
-                prune(deque, cutoff);
-                deque.addLast(now);
-                return deque;
-            });
+            if (accountAttempts.containsKey(normalizedEmail) || accountAttempts.size() < MAX_CAPACITY || !isAllBlocked(accountAttempts, maxAttemptsPerAccount)) {
+                accountAttempts.compute(normalizedEmail, (k, deque) -> {
+                    if (deque == null) deque = new ConcurrentLinkedDeque<>();
+                    prune(deque, cutoff);
+                    deque.addLast(now);
+                    return deque;
+                });
+            }
         }
         cleanOldEntries();
     }
@@ -160,6 +179,15 @@ public class LoginRateLimiterService {
         while (!queue.isEmpty() && queue.peekFirst().isBefore(cutoff)) {
             queue.pollFirst();
         }
+    }
+
+    private boolean isAllBlocked(ConcurrentHashMap<String, Deque<Instant>> map, int threshold) {
+        for (Deque<Instant> deque : map.values()) {
+            if (deque.size() < threshold) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void cleanOldEntries() {
@@ -191,6 +219,15 @@ public class LoginRateLimiterService {
 
     public int getAccountAttemptsSize() {
         return accountAttempts.size();
+    }
+
+    public void injectAccountHistoryForTesting(String account, int count) {
+        Deque<Instant> deque = new ConcurrentLinkedDeque<>();
+        Instant now = Instant.now();
+        for (int i = 0; i < count; i++) {
+            deque.add(now);
+        }
+        accountAttempts.put(account, deque);
     }
 
     private Set<String> getTrustedProxies() {

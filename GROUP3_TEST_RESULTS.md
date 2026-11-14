@@ -10,13 +10,13 @@
 
 | Verification Suite | Tests Executed | Passed | Failed | Errors | Skipped | Status |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Backend Unit & Integration Suite** | **83** | **83** | **0** | **0** | **0** | **PASSED** |
+| **Backend Unit & Integration Suite** | **86** | **86** | **0** | **0** | **0** | **PASSED** |
 | - `EdgeSecurityProductionVerificationTest` | 6 | 6 | 0 | 0 | 0 | PASSED |
 | - `FlywayProductionVerificationTest` | 4 | 4 | 0 | 0 | 0 | PASSED |
 | - `TenantContextSafetyTest` | 5 | 5 | 0 | 0 | 0 | PASSED |
 | - `Group2PerformanceAndRegressionTest` | 4 | 4 | 0 | 0 | 0 | PASSED |
 | - `WebSocketIntegrationProductionTest` | 11 | 11 | 0 | 0 | 0 | PASSED |
-| - `RestrovisionApplicationTests` | 53 | 53 | 0 | 0 | 0 | PASSED |
+| - `RestrovisionApplicationTests` | 56 | 56 | 0 | 0 | 0 | PASSED |
 | **Edge AI & Vision State Engine** | **5** | **5** | **0** | **0** | **0** | **PASSED** |
 | **Frontend Production Build (`vite build`)** | **1,610 modules** | **1,610** | **0** | **0** | **0** | **PASSED (324 kB bundle)** |
 | **Frontend Empty Catch Block Audit** | **17 locations** | **17 fixed**| **0** | **0** | **0** | **PASSED (0 remaining)** |
@@ -25,12 +25,12 @@
 
 ## 2. Group 3 Focused Backend Test Results
 
-The following 15 tests cover Group 3 implementation and the final security verification in `RestrovisionApplicationTests`:
+The following 18 tests cover Group 3 implementation, security verification, and the three edge cases in `RestrovisionApplicationTests`:
 
 ```
 [INFO] Running com.restrovision.RestrovisionApplicationTests
 ...
-[INFO] Tests run: 53, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 19.82 s -- in com.restrovision.RestrovisionApplicationTests
+[INFO] Tests run: 56, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 22.87 s -- in com.restrovision.RestrovisionApplicationTests
 ```
 
 ### Detailed Breakdown of Group 3 Tests
@@ -52,6 +52,9 @@ The following 15 tests cover Group 3 implementation and the final security verif
 | `07w4` | `testFeedbackRateLimiterConcurrencyAndBoundedMemory` | 20 concurrent threads submit feedback, IP threshold is reached atomically; flooding 5,500 noise keys prunes cleanly and maintains cache size <= 5,000. | **PASS** |
 | `07w5` | `testTrustedProxyChainedForwardedForResolution` | Chained `X-Forwarded-For: 203.0.113.195, 70.41.3.18` from trusted proxy (`127.0.0.1`) extracts first client IP (`203.0.113.195`). Untrusted remote IP ignores header entirely. | **PASS** |
 | `07w6` | `testCustomerFeedbackXssOutputPathAudit` | End-to-end feedback storage and analytics retrieval: JSON output verified valid; quotes, newlines, and Devanagari Unicode intact; zero double-HTML entity encoding. | **PASS** |
+| `07x1` | `testSharedIpFeedbackDifferentCustomersSubmitWithinCooldown` | Edge Case 1: Two customers on same Wi-Fi (`198.51.100.99`), same table (Table 2), different devices submit within 15s -> both succeed (200 OK). Same device rapid second review -> 429. Arbitrary client-supplied JSON ID ignored -> 429. DB verified. | **PASS** |
+| `07x2` | `testAllBlockedCacheSaturationFailClosedProtection` | Edge Case 2: 5,000 actively blocked accounts/IPs fill limiter caches. Protected entries are never evicted. New identities fail closed with rate-limit block (HTTP 429). Memory strictly bounded <= 5,000. | **PASS** |
+| `07x3` | `testMissingFeedbackSessionIdSecureBindingAndRejection` | Edge Case 3: Feedback without session ID binds to current active session (`saved.sessionId == t.currentSessionId`). When new party arrives, binds to new session. Tables with no active session reject with 400 Bad Request. | **PASS** |
 
 ---
 

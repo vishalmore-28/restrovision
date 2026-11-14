@@ -84,7 +84,7 @@ Remediation Group 3 addresses 4 critical vulnerabilities and quality defects:
   ```
 
 #### 7. `Backend/src/test/java/com/restrovision/RestrovisionApplicationTests.java` (Modified)
-- Added 15 empirical tests covering initial Group 3 implementation and final verification:
+- Added 18 empirical tests covering Group 3 implementation, security verification, and the three edge cases:
   - `07o`: Login rate limiting by account (5 attempts -> 6th triggers 429).
   - `07p`: Login rate limiting uniform response without account enumeration.
   - `07q`: Successful login resets account counter, preserves IP counter.
@@ -100,6 +100,9 @@ Remediation Group 3 addresses 4 critical vulnerabilities and quality defects:
   - `07w4`: Feedback rate limiter concurrency (20 threads) and bounded memory under 5,500 flood requests.
   - `07w5`: Trusted proxy chained X-Forwarded-For parsing (`client, proxy1`) and untrusted proxy rejection.
   - `07w6`: Customer feedback XSS output-path audit, React plain-text interpolation, and Devanagari multilingual verification.
+  - `07x1`: Edge Case 1: Shared IP Wi-Fi feedback allowing distinct customer devices at the same table to submit within 15s without trusting arbitrary client-supplied IDs.
+  - `07x2`: Edge Case 2: All-blocked cache saturation protecting locked entries from eviction and failing closed for new identities when capacity is full.
+  - `07x3`: Edge Case 3: Missing session ID secure binding to table's active current session, updating when new session arrives, and rejecting inactive tables.
 
 ---
 

@@ -1685,7 +1685,7 @@ class RestrovisionApplicationTests {
         // Submit new feedback with multilingual text, quotes, and newlines
         String rawComment = "चविष्ट जेवण! \"Biryani & Paneer Tikka was wonderful.\"\nWill visit again.";
         Map<String, Object> req = Map.of(
-                "tableId", 3L,
+                "tableId", 2L,
                 "rating", 5,
                 "comment", rawComment
         );
@@ -1713,6 +1713,270 @@ class RestrovisionApplicationTests {
         assertThat(responseJson).doesNotContain("&gt;");
 
         feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07x1: Edge Case 1: Shared IP feedback allows distinct customers at same table to submit within 15s")
+    void testSharedIpFeedbackDifferentCustomersSubmitWithinCooldown() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        String sharedWifiIp = "198.51.100.99";
+        Long tableId = 2L;
+
+        // Customer A on iPhone submits first review
+        Map<String, Object> reqA = Map.of(
+                "tableId", tableId,
+                "rating", 5,
+                "comment", "Customer A: Exceptional Dal Makhani and warm hospitality!"
+        );
+        MvcResult resA = mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr(sharedWifiIp);
+                            return request;
+                        })
+                        .header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile Safari/604.1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqA)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode jsonA = objectMapper.readTree(resA.getResponse().getContentAsString());
+        Long feedbackIdA = jsonA.get("feedbackId").asLong();
+
+        // Customer B on Android at the same table on the same Wi-Fi submits DIFFERENT review within 15 seconds
+        Map<String, Object> reqB = Map.of(
+                "tableId", tableId,
+                "rating", 4,
+                "comment", "Customer B: Loved the garlic butter naan, cocktails were great."
+        );
+        MvcResult resB = mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr(sharedWifiIp);
+                            return request;
+                        })
+                        .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile Safari/537.36")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqB)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode jsonB = objectMapper.readTree(resB.getResponse().getContentAsString());
+        Long feedbackIdB = jsonB.get("feedbackId").asLong();
+
+        // Customer A attempts rapid second review from their device within 15 seconds -> 429
+        Map<String, Object> reqA2 = Map.of(
+                "tableId", tableId,
+                "rating", 3,
+                "comment", "Customer A rapid follow-up comment"
+        );
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr(sharedWifiIp);
+                            return request;
+                        })
+                        .header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile Safari/604.1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqA2)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("recently submitted from your device")));
+
+        // Attempting to bypass cooldown by injecting arbitrary client-supplied identity in JSON is ignored -> still 429
+        Map<String, Object> reqSpoof = new HashMap<>(reqA2);
+        reqSpoof.put("clientId", "arbitrary-spoofed-client-uuid-999");
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr(sharedWifiIp);
+                            return request;
+                        })
+                        .header("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile Safari/604.1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqSpoof)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("recently submitted from your device")));
+
+        // Database assertions: verify both records independently persisted with correct table, session, and comment
+        CustomerFeedback fbA = feedbackRepository.findById(feedbackIdA).orElseThrow();
+        CustomerFeedback fbB = feedbackRepository.findById(feedbackIdB).orElseThrow();
+        assertThat(fbA.getTableId()).isEqualTo(tableId);
+        assertThat(fbB.getTableId()).isEqualTo(tableId);
+        assertThat(fbA.getCommentText()).contains("Exceptional Dal Makhani");
+        assertThat(fbB.getCommentText()).contains("Loved the garlic butter naan");
+        assertThat(fbA.getFeedbackId()).isNotEqualTo(fbB.getFeedbackId());
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07x2: Edge Case 2: All-blocked cache saturation cannot evict protected entries and fails closed for new identities")
+    void testAllBlockedCacheSaturationFailClosedProtection() {
+        loginRateLimiterService.clear();
+        feedbackRateLimiterService.clear();
+
+        // 1. Part A: Login Rate Limiter Saturation
+        // Fill accountAttempts with 5,000 actively blocked accounts (each has 5 failed attempts)
+        for (int i = 0; i < 5000; i++) {
+            String account = "blocked" + i + "@restrovision.test";
+            loginRateLimiterService.injectAccountHistoryForTesting(account, 5);
+        }
+        assertThat(loginRateLimiterService.getAccountAttemptsSize()).isEqualTo(5000);
+
+        // Verify existing blocked identity #100 is still strictly blocked (never evicted)
+        LoginRateLimiterService.RateLimitResult resBlocked = loginRateLimiterService.checkLimit("10.10.10.10", "blocked100@restrovision.test");
+        assertThat(resBlocked.isBlocked()).isTrue();
+
+        // Verify NEW unknown identity fails closed when cache is saturated with actively blocked accounts
+        LoginRateLimiterService.RateLimitResult resNew = loginRateLimiterService.checkLimit("10.10.10.10", "newunmetered@restrovision.test");
+        assertThat(resNew.isBlocked()).isTrue();
+        assertThat(resNew.getRetryAfterSeconds()).isGreaterThan(0);
+
+        // Verify capacity is not silently breached
+        loginRateLimiterService.recordFailure("10.10.10.10", "newunmetered@restrovision.test");
+        assertThat(loginRateLimiterService.getAccountAttemptsSize()).isLessThanOrEqualTo(5000);
+
+        // 2. Part B: Feedback Rate Limiter Saturation
+        // Fill ipHistory with 5,000 actively blocked IPs (each has 10 submissions)
+        for (int i = 0; i < 5000; i++) {
+            String ip = "10.0." + (i / 256) + "." + (i % 256);
+            feedbackRateLimiterService.injectIpHistoryForTesting(ip, 10);
+        }
+        assertThat(feedbackRateLimiterService.getIpHistorySize()).isEqualTo(5000);
+
+        // Verify existing blocked IP is strictly blocked
+        FeedbackRateLimiterService.FeedbackLimitResult fbBlocked = feedbackRateLimiterService.checkLimits("10.0.0.1", 2L, 5, "Different comment");
+        assertThat(fbBlocked.isBlocked()).isTrue();
+
+        // Verify NEW unknown IP fails closed when capacity is exhausted with blocked IPs
+        FeedbackRateLimiterService.FeedbackLimitResult fbNew = feedbackRateLimiterService.checkLimits("198.51.250.1", 2L, 5, "New IP comment");
+        assertThat(fbNew.isBlocked()).isTrue();
+        assertThat(fbNew.getReason()).contains("capacity reached");
+
+        // Verify capacity remains bounded <= 5000
+        feedbackRateLimiterService.recordSubmission("198.51.250.1", 2L, 5, "New IP comment");
+        assertThat(feedbackRateLimiterService.getIpHistorySize()).isLessThanOrEqualTo(5000);
+
+        loginRateLimiterService.clear();
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07x3: Edge Case 3: Missing session ID securely binds to current active session and rejects expired/inactive tables")
+    void testMissingFeedbackSessionIdSecureBindingAndRejection() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        RestaurantTable t2 = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+        Long originalSessionId = t2.getCurrentSessionId();
+        assertThat(originalSessionId).isNotNull();
+
+        TableSession newSession = null;
+        try {
+            // Case A: Submit feedback with NO sessionId on Table 2 -> securely binds to Table 2's current session
+            Map<String, Object> reqA = Map.of(
+                "tableId", 2L,
+                "rating", 5,
+                "comment", "Dining party leaving feedback without explicit session ID"
+            );
+            MvcResult resA = mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(reqA)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            JsonNode jsonA = objectMapper.readTree(resA.getResponse().getContentAsString());
+            Long feedbackIdA = jsonA.get("feedbackId").asLong();
+
+            // Database assertion for Case A: sessionId is securely set to table's active currentSessionId
+            CustomerFeedback fbA = feedbackRepository.findById(feedbackIdA).orElseThrow();
+            assertThat(fbA.getSessionId()).isEqualTo(originalSessionId);
+
+            // Clear cooldown before new party arrives
+            feedbackRateLimiterService.clear();
+
+            // Case B: Table's previous session ends and a NEW session starts
+            TableSession oldSession = sessionRepository.findById(originalSessionId).orElseThrow();
+            oldSession.setStatus("CLOSED");
+            oldSession.setDepartedAt(Instant.now());
+            sessionRepository.save(oldSession);
+
+            newSession = new TableSession(1L, 2L, "AI", 4);
+            newSession = sessionRepository.save(newSession);
+            t2 = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+            t2.setCurrentSessionId(newSession.getSessionId());
+            t2 = tableRepository.save(t2);
+
+            // Submit feedback with NO sessionId after new session seated -> binds to NEW session
+            Map<String, Object> reqB = Map.of(
+                "tableId", 2L,
+                "rating", 5,
+                "comment", "Second party dining at table 2 leaving feedback"
+            );
+            MvcResult resB = mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(reqB)))
+                    .andExpect(status().isOk())
+                    .andReturn();
+
+            JsonNode jsonB = objectMapper.readTree(resB.getResponse().getContentAsString());
+            Long feedbackIdB = jsonB.get("feedbackId").asLong();
+
+            // Database assertion for Case B: securely bound to new session, NOT old session
+            CustomerFeedback fbB = feedbackRepository.findById(feedbackIdB).orElseThrow();
+            assertThat(fbB.getSessionId()).isEqualTo(newSession.getSessionId());
+            assertThat(fbB.getSessionId()).isNotEqualTo(originalSessionId);
+
+            // Clear cooldown for Case C
+            feedbackRateLimiterService.clear();
+
+            // Case C: Table session ends and NO new session has started (currentSessionId is null)
+            t2 = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+            t2.setCurrentSessionId(null);
+            t2 = tableRepository.save(t2);
+
+            long feedbackCountBefore = feedbackRepository.count();
+            Map<String, Object> reqC = Map.of(
+                "tableId", 2L,
+                "rating", 4,
+                "comment", "Orphaned feedback attempt when no session is active"
+            );
+            mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(reqC)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("No active session found for table 2")));
+
+            // Database assertion for Case C: 0 records inserted
+            assertThat(feedbackRepository.count()).isEqualTo(feedbackCountBefore);
+
+            // Case D: Closed session explicitly submitted on table with no active session -> rejected with 400
+            Map<String, Object> reqD = Map.of(
+                "tableId", 2L,
+                "sessionId", originalSessionId,
+                "rating", 4,
+                "comment", "Explicit closed session submission"
+            );
+            mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(reqD)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("closed or inactive")));
+
+        } finally {
+            // Restore Table 2 original session
+            RestaurantTable currentT2 = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElse(null);
+            if (currentT2 != null) {
+                currentT2.setCurrentSessionId(originalSessionId);
+                tableRepository.save(currentT2);
+            }
+            TableSession restoredSession = sessionRepository.findById(originalSessionId).orElse(null);
+            if (restoredSession != null) {
+                restoredSession.setStatus("ACTIVE");
+                restoredSession.setDepartedAt(null);
+                sessionRepository.save(restoredSession);
+            }
+            if (newSession != null && newSession.getSessionId() != null) {
+                sessionRepository.deleteById(newSession.getSessionId());
+            }
+            feedbackRateLimiterService.clear();
+        }
     }
 
     @Test

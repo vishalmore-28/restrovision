@@ -155,6 +155,7 @@
   - Implemented `LoginRateLimiterService` enforcing configurable sliding windows for per-account (`max-attempts-per-account: 5`) and per-IP (`max-attempts-per-ip: 10`) brute-force defense.
   - Dual-map atomic update operations using `compute()` prevent race-condition bypasses under concurrent authentication storms.
   - Memory bounding & eviction protection: Soft-bounded to 5,000 entries. Under cache saturation, eviction removes single-attempt noise while strictly preserving actively blocked victim accounts/IPs.
+  - Fail-closed behavior: When the cache is saturated with $\ge 5,000$ actively blocked accounts and zero safe eviction candidates exist, new unmetered identities fail closed with rate-limit block, preventing unbounded heap growth and DoS bypass (`testAllBlockedCacheSaturationFailClosedProtection` `07x2`).
   - `testLoginRateLimitingByAccountWithoutEnumeration`: 5 invalid login attempts for an account pass to authentication; 6th attempt immediately returns HTTP 429 Too Many Requests with RFC 7807 `ProblemDetail` payload.
   - `testLoginRateLimitingUniformResponseWithoutAccountLeak`: Targeting a non-existent account returns the identical HTTP 429 structure, detail text, and `Retry-After` header as an existing account, completely preventing account enumeration.
   - `testLoginRateLimitResetAfterSuccessfulLogin`: A successful login resets the account failure counter, but does NOT reset the IP failure counter. This strictly prevents alternation attacks where an attacker alternates between valid and invalid logins to exhaust account passwords without triggering IP lockout.
@@ -198,12 +199,12 @@
   - Created `FeedbackRateLimiterService` enforcing multi-layered DoS limits:
     - 1,000 character maximum payload length check (`testFeedbackFloodingRejectionExceedingPayloadLength`).
     - 10 submissions per 5-minute sliding window per IP.
-    - Identity-aware 15-second per-table submission cooldown (`clientIp + ":" + tableId`), allowing multiple distinct patrons at the same table to leave feedback without locking the physical table (`testFeedbackFloodingTableCooldownAndDistinctCustomers`).
+    - Identity-aware 15-second per-table submission cooldown (`clientIp:tableId:deviceFingerprint`), allowing distinct patrons sharing a table Wi-Fi to leave feedback within 15 seconds without trusting arbitrary client-supplied IDs (`testSharedIpFeedbackDifferentCustomersSubmitWithinCooldown` `07x1`).
     - 60-second duplicate submission rejection evaluated prior to cooldown, providing distinct error diagnostics for identical comment floods.
-    - Table session lifecycle validation: Rejects submissions if the table's active session has transitioned or been superseded by a new dining party with HTTP 400 Bad Request (`testFeedbackSessionLifecycleAndOldSessionRejection`).
+    - Table session lifecycle validation: Automatically establishes legitimate current session when `sessionId` is missing, binds to new session after party departure, and rejects requests for tables with no active session with HTTP 400 Bad Request (`testMissingFeedbackSessionIdSecureBindingAndRejection` `07x3`).
     - Table validation: Rejects non-existent tables and tables with status `OUT_OF_SERVICE` (`testFeedbackFloodingRejectionOutOfServiceTable`).
     - Session ownership check: Validates that provided `sessionId` belongs strictly to the requested table (`testFeedbackFloodingSessionIdValidation`).
     - Rating bounds check: Validates rating is strictly between 1 and 5.
-    - Concurrency & soft-bounding: Verified 20 concurrent threads submit feedback atomically, and memory is bounded <= 5,000 under 5,500-key insertion (`testFeedbackRateLimiterConcurrencyAndBoundedMemory`).
+    - Fail-closed behavior: When limiter cache is saturated with 5,000 actively blocked IPs and zero safe eviction candidates exist, new IPs fail closed with rate-limit block (`testAllBlockedCacheSaturationFailClosedProtection` `07x2`).
   - All rate limit breaches return RFC 7807 `ProblemDetail` with HTTP 429 Too Many Requests.
 

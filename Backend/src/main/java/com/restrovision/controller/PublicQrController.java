@@ -144,7 +144,8 @@ public class PublicQrController {
 
         Long restaurantId = table.getRestaurantId();
 
-        // 3. Session validation (if sessionId provided)
+        // 3. Session validation & secure session binding
+        Long feedbackSessionId;
         if (request.getSessionId() != null) {
             TableSession session = sessionRepository.findByRestaurantIdAndSessionId(restaurantId, request.getSessionId())
                     .filter(s -> table.getTableId().equals(s.getTableId()))
@@ -154,6 +155,19 @@ public class PublicQrController {
             if (table.getCurrentSessionId() != null && !table.getCurrentSessionId().equals(session.getSessionId())) {
                 throw new IllegalArgumentException("Session " + request.getSessionId() + " is expired. A new session has already started for table " + tableId);
             }
+            if (!"ACTIVE".equalsIgnoreCase(session.getStatus()) && (table.getCurrentSessionId() == null || !table.getCurrentSessionId().equals(session.getSessionId()))) {
+                throw new IllegalArgumentException("Session " + request.getSessionId() + " is closed or inactive for table " + tableId);
+            }
+            feedbackSessionId = session.getSessionId();
+        } else {
+            // Missing feedback session ID: establish legitimate current session securely
+            if (table.getCurrentSessionId() == null) {
+                throw new IllegalArgumentException("No active session found for table " + tableId + ". Feedback must be associated with an active dining session.");
+            }
+            TableSession currentSession = sessionRepository.findByRestaurantIdAndSessionId(restaurantId, table.getCurrentSessionId())
+                    .filter(s -> table.getTableId().equals(s.getTableId()) && "ACTIVE".equalsIgnoreCase(s.getStatus()))
+                    .orElseThrow(() -> new IllegalArgumentException("Current session for table " + tableId + " is invalid or inactive."));
+            feedbackSessionId = currentSession.getSessionId();
         }
 
         // 4. Payload size limit (BUG-013)
@@ -167,8 +181,9 @@ public class PublicQrController {
 
         // 6. Anti-Flooding & Abuse Protection (BUG-013)
         String clientIp = loginRateLimiterService.resolveClientIp(httpRequest);
+        String clientFingerprint = resolveDeviceFingerprint(httpRequest);
         FeedbackRateLimiterService.FeedbackLimitResult limit = feedbackRateLimiter.checkLimits(
-                clientIp, tableId, request.getRating(), cleanComment);
+                clientIp, clientFingerprint, tableId, request.getRating(), cleanComment);
         if (limit.isBlocked()) {
             ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                     HttpStatus.TOO_MANY_REQUESTS, limit.getReason());
@@ -179,12 +194,12 @@ public class PublicQrController {
                     .body(problem);
         }
 
-        feedbackRateLimiter.recordSubmission(clientIp, tableId, request.getRating(), cleanComment);
+        feedbackRateLimiter.recordSubmission(clientIp, clientFingerprint, tableId, request.getRating(), cleanComment);
 
         CustomerFeedback feedback = new CustomerFeedback();
         feedback.setRestaurantId(restaurantId);
         feedback.setTableId(table.getTableId());
-        feedback.setSessionId(request.getSessionId());
+        feedback.setSessionId(feedbackSessionId);
         feedback.setRating(request.getRating());
         feedback.setCommentText(cleanComment);
 
@@ -210,5 +225,21 @@ public class PublicQrController {
 
         feedback = feedbackRepository.save(feedback);
         return ResponseEntity.ok(feedback);
+    }
+
+    private String resolveDeviceFingerprint(HttpServletRequest request) {
+        if (request == null) {
+            return "DEFAULT";
+        }
+        if (request.getSession(false) != null) {
+            return "SESS:" + request.getSession(false).getId();
+        }
+        String userAgent = request.getHeader("User-Agent");
+        String acceptLang = request.getHeader("Accept-Language");
+        if (org.springframework.util.StringUtils.hasText(userAgent) || org.springframework.util.StringUtils.hasText(acceptLang)) {
+            String raw = (userAgent != null ? userAgent.trim() : "") + "|" + (acceptLang != null ? acceptLang.trim() : "");
+            return "FP:" + Integer.toHexString(raw.hashCode());
+        }
+        return "DEFAULT";
     }
 }

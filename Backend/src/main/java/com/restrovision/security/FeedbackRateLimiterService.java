@@ -73,7 +73,20 @@ public class FeedbackRateLimiterService {
     }
 
     public FeedbackLimitResult checkLimits(String clientIp, Long tableId, Integer rating, String cleanComment) {
+        return checkLimits(clientIp, null, tableId, rating, cleanComment);
+    }
+
+    public FeedbackLimitResult checkLimits(String clientIp, String clientDeviceFingerprint, Long tableId, Integer rating, String cleanComment) {
         Instant now = Instant.now();
+
+        // 0. Fail-closed defense under extreme cache saturation:
+        // If the cache is at/above capacity and all existing entries are actively blocked (no safe eviction candidate),
+        // do not admit new unmetered IPs. Fail closed to prevent unbounded heap growth and DoS bypass.
+        if (clientIp != null && !clientIp.isBlank() && !ipHistory.containsKey(clientIp)
+                && ipHistory.size() >= MAX_CAPACITY && isAllBlocked(ipHistory, maxPerIpWindow)) {
+            log.warn("Feedback limiter IP cache saturated (all {} entries actively blocked). Failing closed for new IP {}", MAX_CAPACITY, clientIp);
+            return new FeedbackLimitResult(true, "Feedback rate limit capacity reached. Please try again later.", ipWindowSeconds);
+        }
 
         // 1. IP Sliding Window Rate Limit
         if (clientIp != null && !clientIp.isBlank()) {
@@ -107,7 +120,7 @@ public class FeedbackRateLimiterService {
         }
 
         // 3. Client-Table Cooldown Window (prevents rapid automated bursts from the same client targeting this table)
-        String clientTableKey = generateClientTableKey(clientIp, tableId);
+        String clientTableKey = generateClientTableKey(clientIp, clientDeviceFingerprint, tableId);
         Instant lastTableTime = clientTableCooldown.get(clientTableKey);
         if (lastTableTime != null) {
             long elapsed = Duration.between(lastTableTime, now).getSeconds();
@@ -122,19 +135,25 @@ public class FeedbackRateLimiterService {
     }
 
     public void recordSubmission(String clientIp, Long tableId, Integer rating, String cleanComment) {
+        recordSubmission(clientIp, null, tableId, rating, cleanComment);
+    }
+
+    public void recordSubmission(String clientIp, String clientDeviceFingerprint, Long tableId, Integer rating, String cleanComment) {
         Instant now = Instant.now();
         Instant cutoff = now.minusSeconds(ipWindowSeconds);
         if (clientIp != null && !clientIp.isBlank()) {
-            ipHistory.compute(clientIp, (k, deque) -> {
-                if (deque == null) deque = new ConcurrentLinkedDeque<>();
-                while (!deque.isEmpty() && deque.peekFirst().isBefore(cutoff)) {
-                    deque.pollFirst();
-                }
-                deque.addLast(now);
-                return deque;
-            });
+            if (ipHistory.containsKey(clientIp) || ipHistory.size() < MAX_CAPACITY || !isAllBlocked(ipHistory, maxPerIpWindow)) {
+                ipHistory.compute(clientIp, (k, deque) -> {
+                    if (deque == null) deque = new ConcurrentLinkedDeque<>();
+                    while (!deque.isEmpty() && deque.peekFirst().isBefore(cutoff)) {
+                        deque.pollFirst();
+                    }
+                    deque.addLast(now);
+                    return deque;
+                });
+            }
         }
-        String clientTableKey = generateClientTableKey(clientIp, tableId);
+        String clientTableKey = generateClientTableKey(clientIp, clientDeviceFingerprint, tableId);
         clientTableCooldown.put(clientTableKey, now);
 
         String fingerprint = generateFingerprint(clientIp, tableId, rating, cleanComment);
@@ -143,8 +162,10 @@ public class FeedbackRateLimiterService {
         cleanOldEntries();
     }
 
-    private String generateClientTableKey(String clientIp, Long tableId) {
-        return (clientIp != null && !clientIp.isBlank() ? clientIp.trim() : "unknown") + ":" + (tableId != null ? tableId : 0L);
+    private String generateClientTableKey(String clientIp, String clientDeviceFingerprint, Long tableId) {
+        String ipPart = (clientIp != null && !clientIp.isBlank() ? clientIp.trim() : "unknown");
+        String devPart = (clientDeviceFingerprint != null && !clientDeviceFingerprint.isBlank() ? clientDeviceFingerprint.trim() : "DEFAULT");
+        return ipPart + ":" + (tableId != null ? tableId : 0L) + ":" + devPart;
     }
 
     private String generateFingerprint(String clientIp, Long tableId, Integer rating, String cleanComment) {
@@ -152,6 +173,15 @@ public class FeedbackRateLimiterService {
                 tableId + ":" +
                 rating + ":" +
                 Objects.hashCode(cleanComment != null ? cleanComment.trim() : "");
+    }
+
+    private boolean isAllBlocked(ConcurrentHashMap<String, Deque<Instant>> map, int threshold) {
+        for (Deque<Instant> deque : map.values()) {
+            if (deque.size() < threshold) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private void cleanOldEntries() {
@@ -172,16 +202,16 @@ public class FeedbackRateLimiterService {
             clientTableCooldown.entrySet().removeIf(e -> e.getValue().isBefore(tableCutoff));
 
             // Hard memory bounding if still above MAX_CAPACITY:
+            // Remove non-blocked entries first, NEVER evict actively blocked IP entries (size >= maxPerIpWindow)
+            if (ipHistory.size() > MAX_CAPACITY) {
+                ipHistory.entrySet().removeIf(e -> e.getValue().size() < maxPerIpWindow);
+            }
             while (duplicateFingerprints.size() > MAX_CAPACITY) {
                 var it = duplicateFingerprints.keySet().iterator();
                 if (it.hasNext()) { it.next(); it.remove(); } else { break; }
             }
             while (clientTableCooldown.size() > MAX_CAPACITY) {
                 var it = clientTableCooldown.keySet().iterator();
-                if (it.hasNext()) { it.next(); it.remove(); } else { break; }
-            }
-            while (ipHistory.size() > MAX_CAPACITY) {
-                var it = ipHistory.keySet().iterator();
                 if (it.hasNext()) { it.next(); it.remove(); } else { break; }
             }
         }
@@ -199,6 +229,15 @@ public class FeedbackRateLimiterService {
 
     public int getIpHistorySize() {
         return ipHistory.size();
+    }
+
+    public void injectIpHistoryForTesting(String ip, int count) {
+        Deque<Instant> deque = new ConcurrentLinkedDeque<>();
+        Instant now = Instant.now();
+        for (int i = 0; i < count; i++) {
+            deque.add(now);
+        }
+        ipHistory.put(ip, deque);
     }
 
     public int getClientTableCooldownSize() {
