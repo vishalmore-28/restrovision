@@ -270,7 +270,7 @@ export default function FloorPlan({ onSelectTab }) {
           </p>
         </div>
 
-        <div className="flex items-center gap-4 text-xs">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-xs">
           <div
             className="px-3.5 py-1.5 rounded-xl border flex items-center gap-3 font-medium"
             style={{
