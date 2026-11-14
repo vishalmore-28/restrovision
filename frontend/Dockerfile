@@ -1,34 +1,50 @@
+# ==============================================================================
+# RESTROVISION v2.0 - Production Frontend Multi-Stage Dockerfile (BUG-023)
+# Base: Node 22 Alpine (builder) -> Nginx Alpine (runtime)
+# Features: Self-contained build, non-root permissions, health check probe
+# ==============================================================================
+
+# --- Stage 1: Build & Bundle ---
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Cache package manifests layer
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Copy source code and build production assets
+COPY . .
+RUN npm run build
+
+# --- Stage 2: Hardened Runtime Container ---
 FROM nginx:alpine
 
-COPY dist /usr/share/nginx/html
+LABEL maintainer="RESTROVISION Platform Engineering <devops@restrovision.com>"
+LABEL version="2.0.0"
+LABEL description="RESTROVISION Production React SPA with Nginx"
 
-COPY <<'EOF' /etc/nginx/conf.d/default.conf
-server {
-    listen 80;
-    server_name localhost;
+# Install curl for reliable container health check probes
+RUN apk add --no-cache curl
 
-    location / {
-        root /usr/share/nginx/html;
-        index index.html index.htm;
-        try_files $uri $uri/ /index.html;
-    }
+# Copy custom Nginx configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-    location /api {
-        proxy_pass http://backend:8080;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
+# Copy production static assets from builder stage
+COPY --from=builder /app/dist /usr/share/nginx/html
 
-    location /ws {
-        proxy_pass http://backend:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "Upgrade";
-        proxy_set_header Host $host;
-    }
-}
-EOF
+# Set proper ownership and file permissions
+RUN chown -R nginx:nginx /usr/share/nginx/html && \
+    chmod -R 755 /usr/share/nginx/html && \
+    chown -R nginx:nginx /var/cache/nginx && \
+    chown -R nginx:nginx /var/log/nginx && \
+    touch /var/run/nginx.pid && \
+    chown -R nginx:nginx /var/run/nginx.pid
 
 EXPOSE 80
+
+# Production Health Check Probe
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:80/health || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
