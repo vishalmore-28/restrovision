@@ -36,7 +36,7 @@ The following granular commits represent the complete audit trail of the hardeni
 
 | Commit SHA | Commit Type | Scope / Defect | Commit Message Summary |
 | :--- | :---: | :---: | :--- |
-| `[PENDING]` | `fix` | Production Hardening | `fix(deploy): harden Flyway baseline safety, enforce production credential fail-fast, and publish final release assessment reports` |
+| `c124bb9` | `fix` | Production Hardening | `fix(deploy): harden Flyway baseline safety, enforce production credential fail-fast, and publish final release assessment reports` |
 | `dfda6b4` | `docs` | Governance | `docs: record commit 1002960 in defect register and git reconciliation log` |
 | `1002960` | `fix` | Production Deployment | `fix(deploy): enforce mandatory credentials, digest-pinned images, Flyway metadata isolation, and env variable reconciliation` |
 | `05b4dfd` | `docs` | Governance | `docs: record deployment hardening commit e2e2a65 in reconciliation log` |
