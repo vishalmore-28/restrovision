@@ -63,66 +63,137 @@ Used for disaster recovery against media failure, corruption, or catastrophic da
 ### 3.1 Strict Isolation Principle
 > [!CAUTION]
 > **NEVER TEST RESTORE ON PRODUCTION OR PRIMARY PDB:**  
-> Testing backup restoration directly in the active primary PDB risks catastrophic accidental overwrites, locks, or schema corruption. All restore validations must be executed in an isolated clone PDB (`TESTPDB`) or remapped schema namespace.
+> Testing backup restoration directly in the active primary PDB (`FREEPDB1`) risks catastrophic accidental overwrites, locks, or schema corruption. All restore validations must be executed exclusively in an isolated disposable clone PDB (`TESTPDB`) with schema remapping.
 
-### 3.2 Staging Remapped Restore Execution via Data Pump
-To verify dump file integrity without affecting active schemas:
-1. Create a transient verification schema `RESTROVISION_RECOVERY`:
-   ```sql
-   CREATE USER RESTROVISION_RECOVERY IDENTIFIED BY "TemporaryPass123#"
-     DEFAULT TABLESPACE USERS
-     QUOTA 500M ON USERS;
-   GRANT CREATE SESSION, CREATE TABLE, CREATE SEQUENCE TO RESTROVISION_RECOVERY;
-   ```
-2. Execute Data Pump import with schema remapping:
-   ```bash
-   impdp system/<PASSWORD>@localhost:1521/FREEPDB1 \
-     DIRECTORY=DATA_PUMP_DIR \
-     DUMPFILE=restrovision_migrator_01.dmp \
-     LOGFILE=impdp_recovery_test.log \
-     REMAP_SCHEMA=RESTROVISION_MIGRATOR:RESTROVISION_RECOVERY \
-     TRANSFORM=OID:N
-   ```
-
-### 3.3 The 5-Point Post-Restore Validation Checklist
-Before any restored database image is certified valid, the DBA and QA lead must execute and pass this 5-point checklist:
+### 3.2 Prerequisites & Pre-Flight Database Identity Verification
+Before executing any import or user creation, verify the connected database and PDB identity:
 
 ```sql
--- Point 1: Object Count Parity (Expected: 33 tables, 33 sequences)
-SELECT object_type, COUNT(*) 
+-- Step 0: PRE-FLIGHT IDENTITY VERIFICATION (Execute in SQL*Plus)
+-- Enforces strict execution boundary: MUST be connected to TESTPDB
+SET SERVEROUTPUT ON
+DECLARE
+  v_con_name VARCHAR2(128);
+  v_db_name  VARCHAR2(128);
+BEGIN
+  SELECT SYS_CONTEXT('USERENV', 'CON_NAME'), SYS_CONTEXT('USERENV', 'DB_NAME')
+  INTO v_con_name, v_db_name
+  FROM dual;
+
+  IF UPPER(v_con_name) != 'TESTPDB' THEN
+    RAISE_APPLICATION_ERROR(-20002, 
+      'CRITICAL TARGET ERROR: Connected to container [' || v_con_name || 
+      ']. Restore verification is restricted EXCLUSIVELY to isolated TESTPDB. Primary container FREEPDB1 or CDB$ROOT rejected.');
+  END IF;
+
+  DBMS_OUTPUT.PUT_LINE('PRE-FLIGHT PASSED: Connected to verified recovery container [' || v_con_name || 
+                       '] on database [' || v_db_name || ']. Safe to proceed with test restore.');
+END;
+/
+```
+
+### 3.3 Disposable Recovery Schema Creation (Secure Password Entry)
+Execute in `TESTPDB` using secure interactive password prompt (zero hardcoded credentials, zero plaintext echo):
+
+```sql
+-- Prompt securely for transient account password:
+ACCEPT recovery_password CHAR PROMPT 'Enter secure password for transient RESTROVISION_RECOVERY user: ' HIDE
+
+CREATE USER RESTROVISION_RECOVERY IDENTIFIED BY "&recovery_password"
+  DEFAULT TABLESPACE USERS
+  TEMPORARY TABLESPACE TEMP
+  QUOTA 500M ON USERS;
+
+GRANT CREATE SESSION, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE TO RESTROVISION_RECOVERY;
+
+-- Immediately clear substitution variable from SQL*Plus memory:
+UNDEFINE recovery_password
+```
+
+### 3.4 Isolated Data Pump Restore Execution (`impdp`)
+Execute Data Pump import against the isolated **`TESTPDB`** connection:
+
+```bash
+# Data Pump Import targeting TESTPDB (Password prompted securely, zero credential logging)
+impdp system@localhost:1521/TESTPDB \
+  DIRECTORY=DATA_PUMP_DIR \
+  DUMPFILE=restrovision_migrator_01.dmp \
+  LOGFILE=impdp_recovery_test.log \
+  REMAP_SCHEMA=RESTROVISION_MIGRATOR:RESTROVISION_RECOVERY \
+  TRANSFORM=OID:N \
+  TRANSFORM=SEGMENT_ATTRIBUTES:N \
+  TABLE_EXISTS_ACTION=REPLACE
+```
+
+Inspect the Data Pump log file to certify zero unhandled errors:
+```powershell
+Select-String -Path "impdp_recovery_test.log" -Pattern "ORA-|UDI-|failed"
+```
+
+### 3.5 The 8-Point Post-Restore Validation Checklist
+Before any restored database image is certified valid, the DBA and QA lead must execute and pass this 8-point checklist:
+
+```sql
+SET LINESIZE 200
+SET PAGESIZE 100
+
+-- Point 1: Object Count Parity (Expected: 33 tables, 33 sequences/identities)
+SELECT object_type, COUNT(*) AS object_count
 FROM dba_objects 
 WHERE owner = 'RESTROVISION_RECOVERY' 
-GROUP BY object_type;
+GROUP BY object_type
+ORDER BY object_type;
 
--- Point 2: Constraint & Index Validity (Expected: 0 INVALID or UNUSABLE)
-SELECT owner, index_name, status 
-FROM dba_indexes 
-WHERE owner = 'RESTROVISION_RECOVERY' AND status != 'VALID';
-
-SELECT owner, constraint_name, status 
+-- Point 2: Constraint Validity (Expected: 0 DISABLED or INVALID)
+SELECT constraint_name, constraint_type, status 
 FROM dba_constraints 
 WHERE owner = 'RESTROVISION_RECOVERY' AND status != 'ENABLED';
 
--- Point 3: Core Entity Row Count Verification
-SELECT 'RESTAURANTS' AS tbl, COUNT(*) FROM RESTROVISION_RECOVERY.RESTAURANTS
+-- Point 3: Index Validity (Expected: 0 INVALID or UNUSABLE)
+SELECT index_name, index_type, status 
+FROM dba_indexes 
+WHERE owner = 'RESTROVISION_RECOVERY' AND status NOT IN ('VALID', 'N/A');
+
+-- Point 4: Identity Column & Sequence Parity
+SELECT table_name, column_name, generation_type, identity_options
+FROM dba_tab_identity_cols
+WHERE owner = 'RESTROVISION_RECOVERY'
+ORDER BY table_name;
+
+-- Point 5: Core Entity Row Count Parity
+SELECT 'RESTAURANTS' AS tbl, COUNT(*) AS cnt FROM RESTROVISION_RECOVERY.RESTAURANTS
 UNION ALL SELECT 'USERS', COUNT(*) FROM RESTROVISION_RECOVERY.USERS
 UNION ALL SELECT 'DINING_TABLES', COUNT(*) FROM RESTROVISION_RECOVERY.DINING_TABLES
 UNION ALL SELECT 'ORDERS', COUNT(*) FROM RESTROVISION_RECOVERY.ORDERS
 UNION ALL SELECT 'ORDER_ITEMS', COUNT(*) FROM RESTROVISION_RECOVERY.ORDER_ITEMS
 UNION ALL SELECT 'EDGE_NODES', COUNT(*) FROM RESTROVISION_RECOVERY.EDGE_NODES;
 
--- Point 4: Flyway Schema History Integrity Check
+-- Point 6: Flyway Schema History Integrity Check
 SELECT installed_rank, version, description, type, script, checksum, success 
 FROM RESTROVISION_RECOVERY.flyway_schema_history 
 ORDER BY installed_rank;
 
--- Point 5: Cleanup Transient Recovery Schema (STRICTLY in disposable sandbox TESTPDB only)
--- Programmatic Safety Guard: Verify current container is NOT primary/production before dropping:
+-- Point 7: View and Procedure Validity
+SELECT object_name, object_type, status
+FROM dba_objects
+WHERE owner = 'RESTROVISION_RECOVERY' AND status != 'VALID';
+
+-- Point 8: Whitelist-Only Cleanup Guard (STRICTLY in disposable sandbox TESTPDB only)
+-- Rejects FREEPDB1, CDB$ROOT, and any unexpected PDB. Never executes against primary database.
+SET SERVEROUTPUT ON
+DECLARE
+  v_con_name VARCHAR2(128);
 BEGIN
-  IF SYS_CONTEXT('USERENV', 'CON_NAME') IN ('FREEPDB1', 'ORCLPDB1', 'CDB$ROOT') THEN
-    RAISE_APPLICATION_ERROR(-20001, 'SAFETY GUARD: Destructive DROP USER prohibited in primary or production PDB. Restore tests must be executed in isolated TESTPDB.');
+  SELECT SYS_CONTEXT('USERENV', 'CON_NAME') INTO v_con_name FROM dual;
+
+  IF UPPER(v_con_name) != 'TESTPDB' THEN
+    RAISE_APPLICATION_ERROR(-20001, 
+      'SAFETY GUARD ACTIVATED: Destructive DROP USER rejected. Current container is [' || v_con_name || 
+      ']. Destructive cleanup is strictly prohibited in primary/production containers and permitted exclusively in TESTPDB.');
   END IF;
+
   EXECUTE IMMEDIATE 'DROP USER RESTROVISION_RECOVERY CASCADE';
+  DBMS_OUTPUT.PUT_LINE('CLEANUP SUCCESS: Transient recovery schema RESTROVISION_RECOVERY dropped cleanly in TESTPDB.');
 END;
 /
 ```

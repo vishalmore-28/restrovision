@@ -36,6 +36,8 @@ The following granular commits represent the complete audit trail of the hardeni
 
 | Commit SHA | Commit Type | Scope / Defect | Commit Message Summary |
 | :--- | :---: | :---: | :--- |
+| `[PENDING]` | `fix` | Disaster Recovery | `fix(dr): harden disaster recovery runbook targeting TESTPDB with pre-flight identity check, masked password entry, and whitelist-only cleanup guard` |
+| `0132dd0` | `docs` | Governance | `docs: record commit 1af143d in final git reconciliation log` |
 | `1af143d` | `docs` | Oracle Security | `docs(oracle): harden SQL*Plus password masking with ACCEPT/UNDEFINE, add PL/SQL sandbox guard to recovery drop, and eliminate shell variable syntax` |
 | `0e94af7` | `docs` | Governance | `docs: record commit 8a6a9b1 in final git reconciliation log` |
 | `8a6a9b1` | `docs` | Documentation Sync | `docs(audit): reconcile tech stack versions, test class counts, canonical Oracle DBA scripts, and 21-gate release matrix` |
