@@ -1,56 +1,64 @@
 # RESTROVISION v2.0 — Production Deployment & Operational Runbook
 
-**Document ID:** `DEPLOY-CHECKLIST-20261115-FINAL`  
+**Document ID:** `DEPLOY-CHECKLIST-20261115-REVISED`  
 **Application Target:** RESTROVISION v2.0 Production Deployment  
 **Target Environment:** Oracle Linux 9 / Ubuntu 22.04 LTS / Windows Server 2022  
-**Target Database:** Oracle Database 26ai Free (PDB `FREEPDB1`)  
+**Target Database:** Oracle Database 26ai Free / 19c Enterprise (PDB `FREEPDB1`)  
 **Container Engine:** Docker Engine $\ge 24.0$ / Docker Compose $\ge v2.20$  
-**Date:** 2026-11-15T00:20:00+05:30  
+**Security Standard:** Zero Default Fallbacks, Least Privilege DBA Policy, HTTPS/WSS Only  
+**Revision Date:** 2026-11-15T00:35:00+05:30  
 
 ---
 
-## 1. Pre-Deployment Infrastructure Checklist
+## 1. Pre-Deployment Infrastructure Verification Checklist
 
-Before initiating the deployment sequence, the Infrastructure / Operations team must verify:
+Before initiating production deployment, verify all host prerequisites:
 
-| Check | Item Description | Verification Command / Target | Pass Criteria |
-| :---: | :--- | :--- | :--- |
-| [ ] | **Host Port 8080 Availability** | `netstat -ano \| findstr 8080` | Free (Backend API / Actuator) |
-| [ ] | **Host Port 80 / 5173 Availability**| `netstat -ano \| findstr :80` | Free (Frontend Nginx SPA) |
-| [ ] | **Host Port 8000 Availability** | `netstat -ano \| findstr 8000` | Free (Edge AI Service) |
-| [ ] | **Host Port 1521 Availability** | `netstat -ano \| findstr 1521` | Oracle TNS Listener listening |
-| [ ] | **Docker Engine Active** | `docker info` | Active, Linux container mode |
-| [ ] | **JDK 21 Installed** | `java -version` | OpenJDK 21 LTS |
-| [ ] | **Node.js 22 Installed** | `node -v` | v22.x LTS |
-| [ ] | **Python 3.11+ Installed** | `python --version` | Python 3.11 or 3.13 |
+| Check | Infrastructure Item | Verification Command / Target | Pass Criteria | Status |
+| :---: | :--- | :--- | :--- | :---: |
+| [ ] | **Host Port 8080** | `netstat -ano \| findstr 8080` | Port free for Backend Spring Boot | Ready |
+| [ ] | **Host Port 80 / 443** | `netstat -ano \| findstr :80` | Port free for Frontend Nginx SPA / TLS | Ready |
+| [ ] | **Host Port 8000** | `netstat -ano \| findstr 8000` | Port free for Edge AI Service | Ready |
+| [ ] | **Host Port 1521** | `netstat -ano \| findstr 1521` | Oracle TNS Listener active | **ACTIVE** |
+| [ ] | **Docker Engine Daemon** | `docker info` | Active Linux container daemon | **BLOCKED (Service Stopped)** |
+| [ ] | **JDK 21 LTS** | `java -version` | OpenJDK 21 LTS | **PASS** |
+| [ ] | **Node.js 22 LTS** | `node -v` | v22.x LTS | **PASS** |
+| [ ] | **Python 3.11+** | `python --version` | Python 3.11 / 3.13 | **PASS** |
 
 ---
 
-## 2. Oracle Database 26ai Free DBA Provisioning Guide
+## 2. Oracle Database 26ai Least-Privilege DBA Provisioning Guide
 
-The application requires a dedicated schema user `restrovision` in pluggable database `FREEPDB1`. The Oracle DBA must execute the following commands before starting the backend with the Oracle profile.
+The application schema user `restrovision` must be provisioned in pluggable database `FREEPDB1` by the authorized DBA. 
 
-### Step 2.1: Connect as SYSDBA via SQL*Plus
+> [!CAUTION]
+> **Production Security Mandates:**
+> - **NEVER** use weak or default passwords (such as `restrovision123`).
+> - Passwords must be at least 16 characters containing uppercase, lowercase, numbers, and symbols.
+> - Never hardcode or echo plaintext passwords in shell histories or scripts.
+> - Grant only explicit least-privilege permissions. Do **NOT** grant `DBA`, `SYSDBA`, or `ALL PRIVILEGES`.
+
+### Step 2.1: DBA Authentication & PDB Selection
 ```bash
 sqlplus / as sysdba
 ```
-
-### Step 2.2: Switch to Pluggable Database `FREEPDB1`
 ```sql
 ALTER SESSION SET CONTAINER = FREEPDB1;
 SHOW CON_NAME;
 -- Expected output: CON_NAME = FREEPDB1
 ```
 
-### Step 2.3: Create Application Schema User & Tablespace Quota
+### Step 2.2: Least-Privilege Application User Creation
+Execute the provisioning script, supplying a securely generated production secret:
+
 ```sql
--- 1. Create restrovision schema user
-CREATE USER restrovision IDENTIFIED BY "restrovision123"
+-- 1. Create dedicated application schema user with strict quota
+CREATE USER restrovision IDENTIFIED BY "&ENTER_STRONG_SECURE_PASSWORD"
   DEFAULT TABLESPACE users
   TEMPORARY TABLESPACE temp
   QUOTA UNLIMITED ON users;
 
--- 2. Grant necessary operational privileges
+-- 2. Grant minimum required application privileges (Least Privilege Principle)
 GRANT CREATE SESSION TO restrovision;
 GRANT CREATE TABLE TO restrovision;
 GRANT CREATE VIEW TO restrovision;
@@ -59,7 +67,7 @@ GRANT CREATE PROCEDURE TO restrovision;
 GRANT CREATE TRIGGER TO restrovision;
 GRANT CREATE SYNONYM TO restrovision;
 
--- 3. Verify user status
+-- 3. Verify user status and lock expiry
 SELECT username, account_status, default_tablespace 
 FROM dba_users 
 WHERE username = 'RESTROVISION';
@@ -67,30 +75,31 @@ WHERE username = 'RESTROVISION';
 EXIT;
 ```
 
-### Step 2.4: Validate TNS Connection String
-```bash
-sqlplus restrovision/restrovision123@localhost:1521/freepdb1
--- Expected output: Connected to: Oracle Database 26ai Free ...
-```
-
 ---
 
 ## 3. Flyway Database Migration Sequence
 
-Once the DBA has provisioned user `restrovision`, execute the versioned migrations.
+Once the DBA has provisioned `restrovision`, execute the versioned migrations.
 
-### Option A: Execute Migrations via Maven CLI
-```powershell
-Set-Location "D:\RESTROVISION\Backend"
-mvn flyway:migrate -Poracle -Dflyway.user=restrovision -Dflyway.password=restrovision123
+### Step 3.1: Environment Variable Export (No Plaintext in Commands)
+```bash
+# Securely export credentials in the deployment shell session
+export ORACLE_HOST="localhost"
+export ORACLE_PORT="1521"
+export ORACLE_SERVICE="freepdb1"
+export ORACLE_USERNAME="restrovision"
+read -s -p "Enter Oracle DB Password: " ORACLE_PASSWORD
+export ORACLE_PASSWORD
+echo ""
 ```
 
-### Option B: Automatic Migration on Container Startup
-When the container starts with profile `oracle`, Spring Boot executes Flyway automatically:
-- **Migration V1:** `V1__init_core_schema.sql` (Creates all 33 core tables, indexes, constraints)
-- **Migration V2:** `V2__add_optimistic_locking_version.sql` (Adds `@Version` optimistic locking columns to `table_sessions`, `staff_tasks`, and `service_requests`)
+### Step 3.2: Automated Migration via Spring Boot Startup
+When the application starts with profile `oracle`, Flyway executes migrations automatically:
+- **Migration V1:** `V1__init_core_schema.sql` (Creates 33 core tables, indexes, constraints)
+- **Migration V2:** `V2__add_optimistic_locking_version.sql` (Adds `@Version` optimistic locking columns)
 
-### Verification of Applied Migrations:
+### Step 3.3: Verification of Applied Migrations
+Query the migration history table:
 ```sql
 SELECT version, description, type, installed_on, success 
 FROM restrovision.flyway_schema_history 
@@ -104,114 +113,135 @@ Expected output:
 
 ## 4. Production Secrets & Configuration Matrix
 
-Populate the following environment variables in production (`/etc/environment`, Docker secrets, or cloud secret manager):
+All production secrets must be supplied via environment variables or secret manager. The `oracle` profile in `application-oracle.yml` has **zero default fallbacks** and will fail fast if any required secret is omitted.
 
-| Environment Variable | Recommended Production Value | Description | Default Fallback |
+| Environment Variable | Production Requirement | Purpose | Fallback Behavior |
 | :--- | :--- | :--- | :--- |
-| `SPRING_PROFILES_ACTIVE` | `oracle` | Activates Oracle production datasource profile | `default` (H2) |
-| `ORACLE_HOST` | `oracle-db.internal` | Oracle database hostname / IP | `localhost` |
-| `ORACLE_PORT` | `1521` | Oracle TNS listener port | `1521` |
-| `ORACLE_SERVICE` | `freepdb1` | Oracle PDB service name | `freepdb1` |
-| `ORACLE_USERNAME` | `restrovision` | Application database user | `restrovision` |
-| `ORACLE_PASSWORD` | *[Strong Secret $> 16$ chars]* | Application database password | `restrovision123` |
-| `RESTROVISION_JWT_SECRET`| *[64-byte hex key]* | Signs and verifies user and device JWT tokens | Built-in test secret |
-| `RESTROVISION_EDGE_HMAC_SECRET` | *[64-byte hex key]* | Signs and validates edge-to-cloud AI ingestion payloads | Built-in test secret |
-| `RESTROVISION_COOKIE_SECURE` | `true` | Enforces `Secure` flag on HttpOnly cookies under HTTPS | `false` |
-| `RESTROVISION_TRUSTED_PROXIES` | `10.0.0.0/8,172.16.0.0/12` | CIDR blocks of upstream load balancers / Nginx | `127.0.0.1,::1` |
+| `SPRING_PROFILES_ACTIVE` | `oracle` | Activates Oracle production datasource | Defaults to `default` (H2) |
+| `ORACLE_HOST` | Hostname / IP of Oracle server | Database connection endpoint | Defaults to `localhost` |
+| `ORACLE_PORT` | `1521` | Oracle TNS Listener port | Defaults to `1521` |
+| `ORACLE_SERVICE` | `freepdb1` | Pluggable database service name | Defaults to `freepdb1` |
+| `ORACLE_USERNAME` | `restrovision` | Application database schema user | **FAIL FAST** (No fallback) |
+| `ORACLE_PASSWORD` | Strong password ($> 16$ chars) | Application database password | **FAIL FAST** (No fallback) |
+| `RESTROVISION_JWT_SECRET` | 64-byte hex string (256-bit key) | Signs & verifies user and device JWTs | **FAIL FAST** (No fallback) |
+| `RESTROVISION_HMAC_SECRET`| 64-byte hex string (256-bit key) | Validates edge-to-cloud AI ingestion | **FAIL FAST** (No fallback) |
+| `RESTROVISION_COOKIE_SECURE`| `true` | Enforces `Secure` flag on HttpOnly cookies | Defaults to `true` on Oracle profile |
+| `RESTROVISION_TRUSTED_PROXIES`| CIDR blocks of upstream proxies | Rate limiter IP resolution | Defaults to `127.0.0.1,::1` |
 
 ---
 
-## 5. Container Orchestration Deployment Procedure
+## 5. Container Orchestration & Immutable Image Deployment
 
-### Step 5.1: Build & Launch Multi-Container Stack
+### Step 5.1: Immutable Tagging Policy
+Production container images must use immutable version tags (never rely solely on `:latest`):
+- `restrovision-backend:2.0.0`
+- `restrovision-frontend:2.0.0`
+- `restrovision-edge-ai:2.0.0`
+
+### Step 5.2: Production Multi-Stage Build & Execution
 ```bash
-# Navigate to repository root
-cd /opt/restrovision
+# Export required production secrets into environment
+export RESTROVISION_JWT_SECRET="<SECURE_256BIT_HEX_KEY>"
+export RESTROVISION_HMAC_SECRET="<SECURE_256BIT_HEX_KEY>"
+export ORACLE_PASSWORD="<SECURE_DB_PASSWORD>"
 
-# Build multi-stage images and start in background
-docker compose up --build -d
+# Launch full stack
+docker compose -f docker-compose.yml up --build -d
 ```
 
-### Step 5.2: Verify Container Health & Status
+### Step 5.3: Container Health Check Verification
 ```bash
 docker compose ps
 ```
-Expected output:
-```
-NAME                    IMAGE                   COMMAND                  SERVICE    STATUS
-restrovision-backend    restrovision-backend    "java -XX:+UseContai…"   backend    Up (healthy)
-restrovision-frontend   restrovision-frontend   "nginx -g 'daemon of…"   frontend   Up (healthy)
-restrovision-edge-ai    restrovision-edge-ai    "uvicorn app.main:ap…"   edge-ai    Up (healthy)
-```
-
-### Step 5.3: Execute Live Health Probes
-```bash
-# 1. Backend Health & Readiness
-curl -f http://localhost:8080/actuator/health
-# Expected: {"status":"UP","components":{"db":{"status":"UP"},"diskSpace":{"status":"UP"},"ping":{"status":"UP"}}}
-
-# 2. Frontend Nginx Health Probe
-curl -f http://localhost:80/health
-# Expected: healthy
-
-# 3. Edge AI Live Probe
-curl -f http://localhost:8000/ai/v1/health/live
-# Expected: {"status":"UP","service":"restrovision-ai","node":"edge-pune-01"}
-
-# 4. Edge AI Ready Probe
-curl -f http://localhost:8000/ai/v1/health/ready
-# Expected: {"status":"READY","modelsLoaded":6,"camerasActive":3,"outboxWritable":true}
-```
+Verify every service attains `healthy` status:
+- `restrovision-backend`: `Up (healthy)` via `/actuator/health` probe
+- `restrovision-frontend`: `Up (healthy)` via `/health` probe
+- `restrovision-edge-ai`: `Up (healthy)` via `/ai/v1/health/live` probe
 
 ---
 
-## 6. TLS / Reverse Proxy & Ingress Termination
+## 6. TLS Termination & Production Reverse Proxy Configuration
 
 Production deployments must terminate TLS (HTTPS / WSS) in front of Nginx:
 
-1. **Certificate Files:** Obtain valid CA certificate (`fullchain.pem`) and private key (`privkey.pem`).
-2. **Reverse Proxy Configuration:** Forward `Host`, `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto: https`.
-3. **WebSocket Upgrade Headers:**
+1. **SSL/TLS Certificates:** Install valid CA-signed certificates (`fullchain.pem`, `privkey.pem`).
+2. **Security Headers Enforced:**
    ```nginx
-   proxy_http_version 1.1;
-   proxy_set_header Upgrade $http_upgrade;
-   proxy_set_header Connection "Upgrade";
-   proxy_read_timeout 86400s;
+   add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+   add_header X-Frame-Options "SAMEORIGIN" always;
+   add_header X-Content-Type-Options "nosniff" always;
+   add_header X-XSS-Protection "1; mode=block" always;
+   add_header Referrer-Policy "strict-origin-when-cross-origin" always;
    ```
-4. **HSTS Header:** Add `add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;`.
+3. **WebSocket Persistent Upgrades:**
+   ```nginx
+   location /ws {
+       proxy_pass http://backend:8080;
+       proxy_http_version 1.1;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection "Upgrade";
+       proxy_read_timeout 86400s;
+       proxy_send_timeout 86400s;
+   }
+   ```
 
 ---
 
-## 7. Rollback Strategy & Disaster Recovery Runbook
+## 7. Database Backup, Recovery & Safe Rollback Procedures
 
-### Scenario A: Container Deployment Failure / Bad Code Push
-If a container fails to achieve `healthy` status:
+> [!CAUTION]
+> **CRITICAL DATA SAFETY RULE:**  
+> **NEVER** execute `DROP USER ... CASCADE` or drop database schemas during normal application rollback.  
+> Destructive schema drops destroy all historical restaurant data, tenant configs, order history, and audit logs.  
+> Never test destructive recovery commands against live or production databases.
+
+### 7.1 Pre-Deployment Database Backup (Oracle Data Pump `expdp`)
+Before deploying schema migrations or code updates, take a complete logical backup:
+
 ```bash
-# 1. Revert container instances to previous stable tag
-docker compose down
-git checkout HEAD~1
-docker compose up --build -d
-
-# 2. Validate health probes
-curl -f http://localhost:8080/actuator/health
+# Execute schema backup to Oracle directory DATA_PUMP_DIR
+expdp restrovision/\"$ORACLE_PASSWORD\"@localhost:1521/freepdb1 \
+  schemas=RESTROVISION \
+  directory=DATA_PUMP_DIR \
+  dumpfile=restrovision_predeploy_%U.dmp \
+  logfile=restrovision_predeploy.log \
+  compression=ALL
 ```
 
-### Scenario B: Database Migration Rollback
-Flyway versioned migrations are non-destructive and additive.
-- `V1`: Core schema tables
-- `V2`: Adds nullable `@Version` columns with default 0
+### 7.2 Point-In-Time Restore Procedure (In Isolated Recovery Environment)
+To verify or perform a schema restore without impacting production:
 
-If rollback is required:
-```sql
-ALTER SESSION SET CONTAINER = FREEPDB1;
--- To drop tables cleanly if initial installation failed
-DROP USER restrovision CASCADE;
--- Recreate user and reapply tested migration scripts
+```bash
+# Test restore into an isolated staging database or alternate schema:
+impdp system/\"$SYSTEM_PASSWORD\"@localhost:1521/freepdb1 \
+  directory=DATA_PUMP_DIR \
+  dumpfile=restrovision_predeploy_%U.dmp \
+  remap_schema=RESTROVISION:RESTROVISION_RECOVERY \
+  logfile=restrovision_restore_test.log
 ```
 
-### Scenario C: Camera Edge Node Disconnection
-The Edge AI service contains a durable SQLite Write-Ahead-Log outbox (`app.events.outbox`). If the backend network becomes unavailable:
-1. Edge node accumulates inferred table and gesture events in `edge_outbox.sqlite`.
-2. Outbox background worker retries delivery with exponential backoff (max 10 attempts).
-3. Backend accepts historical events within the 7,200s (2-hour) freshness window upon network restoration.
-4. Duplicate events are atomically rejected via `uq_ai_event` unique constraint without data corruption.
+### 7.3 Application Container Rollback
+If a container update exhibits defects:
+1. Revert Git reference to the previous stable release commit:
+   ```bash
+   git checkout <PREVIOUS_STABLE_COMMIT_SHA>
+   docker compose up --build -d
+   ```
+2. Verify container health probes:
+   ```bash
+   curl -f http://localhost:8080/actuator/health
+   curl -f http://localhost:80/health
+   curl -f http://localhost:8000/ai/v1/health/live
+   ```
+3. Because Flyway migrations `V1` and `V2` are backwards-compatible (adding nullable `@Version` columns with default 0), previous code versions continue to function safely without requiring destructive database schema rollback.
+
+---
+
+## 8. Operational Health Probes & Monitoring Checklist
+
+| Component | Endpoint | Expected Response | Remediation If Failing |
+| :--- | :--- | :--- | :--- |
+| **Backend Actuator** | `GET http://localhost:8080/actuator/health` | `{"status":"UP"}` | Inspect Spring Boot logs; check Oracle DB connectivity |
+| **Frontend Nginx** | `GET http://localhost:80/health` | `healthy` | Verify Nginx worker process; check static file permissions |
+| **Edge AI Liveness** | `GET http://localhost:8000/ai/v1/health/live` | `{"status":"UP"}` | Check Python uvicorn process; inspect camera feeds |
+| **Edge AI Readiness**| `GET http://localhost:8000/ai/v1/health/ready`| `{"status":"READY"}`| Verify model loading and SQLite outbox writability |
