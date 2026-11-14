@@ -1,0 +1,233 @@
+# RESTROVISION v2.0 — Final Database Backup & Disaster Recovery Verification
+
+**Document ID:** `DR-VERIF-20261115-FINAL`  
+**Application Target:** RESTROVISION v2.0 Multi-Tenant Enterprise Restaurant Platform  
+**Active Working Branch:** `feature/production-hardening`  
+**Protected Branch:** `main` (Locked at `171171b08f6bd44f523f224d00c197624246613f`)  
+**Audit Date:** 2026-11-15T01:20:00+05:30  
+**DR Architecture Design:** **VERIFIED & COMPLIANT**  
+**Live Restore Verification:** **NOT RUN / PENDING STAGING PDB**  
+**Production Destructive Command Policy:** **STRICT PROHIBITION ENFORCED**  
+
+---
+
+## 1. Executive Summary
+
+This document establishes the official enterprise Disaster Recovery (DR) and Backup/Restore strategy for the RESTROVISION v2.0 Oracle database tier (`FREEPDB1` / Oracle Database 26ai). 
+
+The strategy combines **Oracle Data Pump (Logical Export)** for tenant migrations and point-in-time schema recovery, with **Oracle Recovery Manager (RMAN Physical Backup)** for full database disaster recovery.
+
+**Crucially, live database restore testing on staging is classified as NOT RUN / PENDING STAGING PDB** because `FREEPDB1` has not yet been provisioned by the DBA and an isolated recovery target PDB (`TESTPDB`) has not been initialized. Testing restore operations directly against unisolated production or primary schemas is strictly forbidden.
+
+---
+
+## 2. Backup Strategy Architecture
+
+RESTROVISION v2.0 mandates a tiered backup topology to satisfy Recovery Point Objective (RPO) $\le 15\text{ minutes}$ and Recovery Time Objective (RTO) $\le 2\text{ hours}$.
+
+### 2.1 Logical Schema Backup: Oracle Data Pump (`expdp`)
+Used for daily scheduled logical snapshots, multi-tenant schema archiving, and pre-deployment checkpoints:
+- **Consistent Export Mechanism:** `FLASHBACK_TIME=SYSTIMESTAMP` ensures transactional read consistency across all 33 tables and Flyway metadata.
+- **Export Command Specification:**
+  ```bash
+  expdp system/<PASSWORD>@localhost:1521/FREEPDB1 \
+    SCHEMAS=RESTROVISION_MIGRATOR \
+    DIRECTORY=DATA_PUMP_DIR \
+    DUMPFILE=restrovision_migrator_%U.dmp \
+    LOGFILE=expdp_restrovision_%DATE%.log \
+    FLASHBACK_TIME=SYSTIMESTAMP \
+    COMPRESSION=ALL \
+    FILESIZE=4G
+  ```
+- **Dual-Account Note:** The export target is exclusively `RESTROVISION_MIGRATOR` as it holds all tables, sequences, and indexes. `RESTROVISION_APP` holds only synonyms and runtime grants, which are documented in infrastructure-as-code.
+
+### 2.2 Physical Point-in-Time Backup: Oracle Recovery Manager (RMAN)
+Used for disaster recovery against media failure, corruption, or catastrophic data center loss:
+- **PDB Archivelog Mode:** Database instance runs in `ARCHIVELOG` mode.
+- **RMAN Incremental Strategy:**
+  - Weekly Level 0 (Full) physical backup.
+  - Daily Level 1 Cumulative incremental backup.
+  - Continuous archive log backup every 15 minutes.
+- **RMAN Backup Command:**
+  ```rman
+  CONNECT TARGET /;
+  BACKUP AS COMPRESSED BACKUPSET 
+    DATABASE 
+    PLUS ARCHIVELOG DELETE INPUT;
+  ```
+
+---
+
+## 3. Isolated Restore & Verification Procedure
+
+### 3.1 Strict Isolation Principle
+> [!CAUTION]
+> **NEVER TEST RESTORE ON PRODUCTION OR PRIMARY PDB:**  
+> Testing backup restoration directly in the active primary PDB (`FREEPDB1`) risks catastrophic accidental overwrites, locks, or schema corruption. All restore validations must be executed exclusively in an isolated disposable clone PDB (`TESTPDB`) with schema remapping.
+
+### 3.2 Prerequisites & Pre-Flight Database Identity Verification
+Before executing any import or user creation, verify the connected database and PDB identity:
+
+```sql
+-- Step 0: PRE-FLIGHT IDENTITY VERIFICATION (Execute in SQL*Plus)
+-- Enforces strict execution boundary: MUST be connected to TESTPDB
+SET SERVEROUTPUT ON
+DECLARE
+  v_con_name VARCHAR2(128);
+  v_db_name  VARCHAR2(128);
+BEGIN
+  SELECT SYS_CONTEXT('USERENV', 'CON_NAME'), SYS_CONTEXT('USERENV', 'DB_NAME')
+  INTO v_con_name, v_db_name
+  FROM dual;
+
+  IF UPPER(v_con_name) != 'TESTPDB' THEN
+    RAISE_APPLICATION_ERROR(-20002, 
+      'CRITICAL TARGET ERROR: Connected to container [' || v_con_name || 
+      ']. Restore verification is restricted EXCLUSIVELY to isolated TESTPDB. Primary container FREEPDB1 or CDB$ROOT rejected.');
+  END IF;
+
+  DBMS_OUTPUT.PUT_LINE('PRE-FLIGHT PASSED: Connected to verified recovery container [' || v_con_name || 
+                       '] on database [' || v_db_name || ']. Safe to proceed with test restore.');
+END;
+/
+```
+
+### 3.3 Disposable Recovery Schema Creation (Secure Password Entry)
+Execute in `TESTPDB` using secure interactive password prompt (zero hardcoded credentials, zero plaintext echo):
+
+```sql
+-- Prompt securely for transient account password:
+ACCEPT recovery_password CHAR PROMPT 'Enter secure password for transient RESTROVISION_RECOVERY user: ' HIDE
+
+CREATE USER RESTROVISION_RECOVERY IDENTIFIED BY "&recovery_password"
+  DEFAULT TABLESPACE USERS
+  TEMPORARY TABLESPACE TEMP
+  QUOTA 500M ON USERS;
+
+GRANT CREATE SESSION, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE TO RESTROVISION_RECOVERY;
+
+-- Immediately clear substitution variable from SQL*Plus memory:
+UNDEFINE recovery_password
+```
+
+### 3.4 Isolated Data Pump Restore Execution (`impdp`)
+Execute Data Pump import against the isolated **`TESTPDB`** connection:
+
+```bash
+# Data Pump Import targeting TESTPDB (Password prompted securely, zero credential logging)
+impdp system@localhost:1521/TESTPDB \
+  DIRECTORY=DATA_PUMP_DIR \
+  DUMPFILE=restrovision_migrator_01.dmp \
+  LOGFILE=impdp_recovery_test.log \
+  REMAP_SCHEMA=RESTROVISION_MIGRATOR:RESTROVISION_RECOVERY \
+  TRANSFORM=OID:N \
+  TRANSFORM=SEGMENT_ATTRIBUTES:N \
+  TABLE_EXISTS_ACTION=REPLACE
+```
+
+Inspect the Data Pump log file to certify zero unhandled errors:
+```powershell
+Select-String -Path "impdp_recovery_test.log" -Pattern "ORA-|UDI-|failed"
+```
+
+### 3.5 The 8-Point Post-Restore Validation Checklist
+Before any restored database image is certified valid, the DBA and QA lead must execute and pass this 8-point checklist:
+
+```sql
+SET LINESIZE 200
+SET PAGESIZE 100
+
+-- Point 1: Object Count Parity (Expected: 33 tables, 33 sequences/identities)
+SELECT object_type, COUNT(*) AS object_count
+FROM dba_objects 
+WHERE owner = 'RESTROVISION_RECOVERY' 
+GROUP BY object_type
+ORDER BY object_type;
+
+-- Point 2: Constraint Validity (Expected: 0 DISABLED or INVALID)
+SELECT constraint_name, constraint_type, status 
+FROM dba_constraints 
+WHERE owner = 'RESTROVISION_RECOVERY' AND status != 'ENABLED';
+
+-- Point 3: Index Validity (Expected: 0 INVALID or UNUSABLE)
+SELECT index_name, index_type, status 
+FROM dba_indexes 
+WHERE owner = 'RESTROVISION_RECOVERY' AND status NOT IN ('VALID', 'N/A');
+
+-- Point 4: Identity Column & Sequence Parity
+SELECT table_name, column_name, generation_type, identity_options
+FROM dba_tab_identity_cols
+WHERE owner = 'RESTROVISION_RECOVERY'
+ORDER BY table_name;
+
+-- Point 5: Core Entity Row Count Parity
+SELECT 'RESTAURANTS' AS tbl, COUNT(*) AS cnt FROM RESTROVISION_RECOVERY.RESTAURANTS
+UNION ALL SELECT 'USERS', COUNT(*) FROM RESTROVISION_RECOVERY.USERS
+UNION ALL SELECT 'DINING_TABLES', COUNT(*) FROM RESTROVISION_RECOVERY.DINING_TABLES
+UNION ALL SELECT 'ORDERS', COUNT(*) FROM RESTROVISION_RECOVERY.ORDERS
+UNION ALL SELECT 'ORDER_ITEMS', COUNT(*) FROM RESTROVISION_RECOVERY.ORDER_ITEMS
+UNION ALL SELECT 'EDGE_NODES', COUNT(*) FROM RESTROVISION_RECOVERY.EDGE_NODES;
+
+-- Point 6: Flyway Schema History Integrity Check
+SELECT installed_rank, version, description, type, script, checksum, success 
+FROM RESTROVISION_RECOVERY.flyway_schema_history 
+ORDER BY installed_rank;
+
+-- Point 7: View and Procedure Validity
+SELECT object_name, object_type, status
+FROM dba_objects
+WHERE owner = 'RESTROVISION_RECOVERY' AND status != 'VALID';
+
+-- Point 8: Whitelist-Only Cleanup Guard (STRICTLY in disposable sandbox TESTPDB only)
+-- Rejects FREEPDB1, CDB$ROOT, and any unexpected PDB. Never executes against primary database.
+SET SERVEROUTPUT ON
+DECLARE
+  v_con_name VARCHAR2(128);
+BEGIN
+  SELECT SYS_CONTEXT('USERENV', 'CON_NAME') INTO v_con_name FROM dual;
+
+  IF UPPER(v_con_name) != 'TESTPDB' THEN
+    RAISE_APPLICATION_ERROR(-20001, 
+      'SAFETY GUARD ACTIVATED: Destructive DROP USER rejected. Current container is [' || v_con_name || 
+      ']. Destructive cleanup is strictly prohibited in primary/production containers and permitted exclusively in TESTPDB.');
+  END IF;
+
+  EXECUTE IMMEDIATE 'DROP USER RESTROVISION_RECOVERY CASCADE';
+  DBMS_OUTPUT.PUT_LINE('CLEANUP SUCCESS: Transient recovery schema RESTROVISION_RECOVERY dropped cleanly in TESTPDB.');
+END;
+/
+```
+
+---
+
+## 4. Additive Migration Compatibility & Safe Rollback
+
+### 4.1 Zero-Downtime Additive Migration Design
+All RESTROVISION v2.0 Flyway SQL migrations (`V1__init_core_schema.sql` and `V2__add_optimistic_locking_version.sql`) are strictly **additive**:
+- New tables and sequences do not alter existing schema contracts.
+- Columns added in V2 (`created_by`, `updated_by`, `audit_hash`, `tenant_id`) include safe defaults or nullable specifications.
+- Foreign keys and check constraints are non-blocking.
+- **Rollback Philosophy:** In the event of an application release failure, the application tier is rolled back to the previous container image. Because migrations are additive, the previous application version continues functioning against the updated database schema without schema rollback.
+
+### 4.2 Strict Prohibition Against Destructive Production Commands vs Disposable Sandboxes
+> [!CAUTION]
+> **ABSOLUTE PROHIBITION OF DESTRUCTIVE COMMANDS IN PRODUCTION:**  
+> The commands `DROP USER RESTROVISION_MIGRATOR CASCADE;` and `DROP USER RESTROVISION_APP CASCADE;` are strictly and permanently prohibited from all production deployment, migration, operations, and rollback runbooks. Dropping schemas destroys all audit trails, financial ledgers, and multi-tenant data, violating compliance requirements.
+> 
+> **Disposable Sandbox Distinction:**  
+> Destructive cleanup (`DROP USER RESTROVISION_RECOVERY CASCADE`) is restricted exclusively to ephemeral, disposable test sandboxes (e.g. `TESTPDB`) to clean up transient verification artifacts after a backup import test has been certified. It is programmatically blocked via PL/SQL safety guards from executing inside primary or production PDBs.
+
+---
+
+## 5. Current DR Verification Status & Gate Decision
+
+| Verification Item | Target Standard | Result | Gate Status |
+| :--- | :--- | :---: | :---: |
+| **Data Pump Syntax & Parameters** | Validated against Oracle 26ai specifications | `FLASHBACK_TIME`, `REMAP_SCHEMA` | **SATISFIED** |
+| **Additive Migration Verification** | V1 & V2 backwards compatibility | Verified | **SATISFIED** |
+| **Destructive Command Elimination** | Zero `DROP CASCADE` in runbooks | Enforced | **SATISFIED** |
+| **Live Isolated Restore Execution** | 5-point checklist passed on `TESTPDB` | **Not Run** | **BLOCKED** |
+| **RMAN PITR Staging Drill** | Live roll-forward drill | **Not Run** | **BLOCKED** |
+
+### Release Recommendation:
+Because live database restore has not yet been demonstrated in an isolated staging PDB, Disaster Recovery readiness remains **BLOCKED / PENDING STAGING PDB**. Live drills must be executed prior to production traffic cutover.

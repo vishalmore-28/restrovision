@@ -3,13 +3,39 @@ spring:
     activate:
       on-profile: oracle
   datasource:
-    url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:ORCLPDB1}
+    url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:freepdb1}
     driver-class-name: oracle.jdbc.OracleDriver
-    username: ${ORACLE_USERNAME:restrovision}
-    password: ${ORACLE_PASSWORD:restrovision123}
+    username: ${ORACLE_APP_USERNAME}
+    password: ${ORACLE_APP_PASSWORD}
+    hikari:
+      data-source-properties:
+        includeSynonyms: true
+  flyway:
+    enabled: true
+    baseline-on-migrate: ${FLYWAY_BASELINE_ON_MIGRATE:false}
+    baseline-version: ${FLYWAY_BASELINE_VERSION:1}
+    locations: classpath:db/migration
+    user: ${ORACLE_MIGRATION_USERNAME}
+    password: ${ORACLE_MIGRATION_PASSWORD}
+    schemas: ${ORACLE_SCHEMA:RESTROVISION_MIGRATOR}
+    default-schema: ${ORACLE_SCHEMA:RESTROVISION_MIGRATOR}
   jpa:
+    open-in-view: false
     hibernate:
-      ddl-auto: validate
+      ddl-auto: ${HIBERNATE_DDL_AUTO:validate}
     properties:
       hibernate:
         dialect: org.hibernate.dialect.OracleDialect
+        synonyms: true
+        type:
+          preferred_instant_jdbc_type: TIMESTAMP
+
+# Production Security Requirements: Mandatory Environment Secrets (No Fallbacks)
+restrovision:
+  jwt:
+    secret: ${RESTROVISION_JWT_SECRET}
+  edge:
+    hmac-secret: ${RESTROVISION_EDGE_HMAC_SECRET:${RESTROVISION_HMAC_SECRET}}
+  security:
+    cookie:
+      secure: ${RESTROVISION_COOKIE_SECURE:true}

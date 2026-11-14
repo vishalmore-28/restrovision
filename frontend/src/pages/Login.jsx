@@ -98,13 +98,14 @@ export default function Login() {
       <div className="absolute top-4 right-4">
         <button
           onClick={toggleTheme}
-          className="p-2 rounded-xl border transition-colors duration-150 flex items-center justify-center shadow-sm"
+          className="p-2 rounded-xl border transition-colors duration-150 flex items-center justify-center shadow-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
           style={{
             backgroundColor: 'var(--bg-card)',
             borderColor: 'var(--border)',
             color: 'var(--text-secondary)',
           }}
           title={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
+          aria-label={`Switch to ${theme === 'light' ? 'Dark' : 'Light'} Mode`}
         >
           {theme === 'light' ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
         </button>
@@ -166,7 +167,9 @@ export default function Login() {
                   type="button"
                   key={portal.role}
                   onClick={() => handleSelectRole(portal)}
-                  className="p-2.5 rounded-xl border text-left transition-colors duration-150 flex flex-col justify-between"
+                  aria-pressed={isSelected}
+                  aria-label={`Select ${portal.label} (${portal.role})`}
+                  className="p-2.5 rounded-xl border text-left transition-colors duration-150 flex flex-col justify-between focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
                   style={{
                     backgroundColor: isSelected ? 'var(--bg-main)' : 'var(--bg-card)',
                     borderColor: isSelected ? 'var(--text-primary)' : 'var(--border)',
@@ -222,6 +225,9 @@ export default function Login() {
         {/* Error Notification */}
         {error && (
           <div
+            id="login-error-alert"
+            role="alert"
+            aria-live="assertive"
             className="p-3.5 rounded-xl border text-xs flex items-center gap-2"
             style={{
               backgroundColor: 'var(--status-critical-bg)',
@@ -237,18 +243,22 @@ export default function Login() {
         {/* Login Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>
+            <label htmlFor="login-email" className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>
               Work Email
             </label>
             <div className="relative">
-              <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-neutral-400" />
+              <Mail className="w-4 h-4 absolute left-3.5 top-3.5 text-neutral-400" aria-hidden="true" />
               <input
+                id="login-email"
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@restrovision.local"
-                className="w-full border rounded-xl pl-10 pr-3.5 py-2.5 text-xs focus:outline-none transition-colors"
+                aria-required="true"
+                aria-invalid={!!error}
+                aria-describedby={error ? "login-error-alert" : undefined}
+                className="w-full border rounded-xl pl-10 pr-3.5 py-2.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-colors"
                 style={{
                   backgroundColor: 'var(--bg-main)',
                   borderColor: 'var(--border)',
@@ -259,18 +269,22 @@ export default function Login() {
           </div>
 
           <div>
-            <label className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>
+            <label htmlFor="login-password" className="block text-xs font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>
               Security Password
             </label>
             <div className="relative">
-              <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-neutral-400" />
+              <Lock className="w-4 h-4 absolute left-3.5 top-3.5 text-neutral-400" aria-hidden="true" />
               <input
+                id="login-password"
                 type="password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
-                className="w-full border rounded-xl pl-10 pr-3.5 py-2.5 text-xs focus:outline-none transition-colors"
+                aria-required="true"
+                aria-invalid={!!error}
+                aria-describedby={error ? "login-error-alert" : undefined}
+                className="w-full border rounded-xl pl-10 pr-3.5 py-2.5 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 transition-colors"
                 style={{
                   backgroundColor: 'var(--bg-main)',
                   borderColor: 'var(--border)',
@@ -283,13 +297,13 @@ export default function Login() {
           <button
             type="submit"
             disabled={submitting}
-            className="w-full py-3 font-bold text-xs rounded-xl shadow-sm transition-opacity duration-150 flex items-center justify-center gap-2 disabled:opacity-50 whitespace-nowrap cursor-pointer"
+            className="w-full py-3 font-bold text-xs rounded-xl shadow-sm transition-opacity duration-150 flex items-center justify-center gap-2 disabled:opacity-50 whitespace-nowrap cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
             style={{
               backgroundColor: 'var(--btn-primary)',
               color: 'var(--btn-primary-text)',
             }}
           >
-            <LogIn className="w-4 h-4" />
+            <LogIn className="w-4 h-4" aria-hidden="true" />
             {submitting ? 'Authenticating…' : `Sign In as ${selectedRole.label}`}
           </button>
         </form>

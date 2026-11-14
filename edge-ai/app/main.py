@@ -20,6 +20,16 @@ app = FastAPI(
     description="On-premises computer vision inference, state engine, SQLite outbox, and batch inference engine (§9)."
 )
 
+@app.on_event("startup")
+def validate_production_configuration():
+    if settings.ENVIRONMENT.lower() == "production":
+        if not settings.SERVICE_TOKEN or settings.SERVICE_TOKEN == "edge-token-pune-01":
+            logger.error("FATAL: Production mode requires a valid cryptographic SERVICE_TOKEN. Static fallback tokens are prohibited.")
+            raise RuntimeError("Production mode requires a valid cryptographic SERVICE_TOKEN")
+        if not settings.EDGE_NODE_ID or settings.EDGE_NODE_ID == "edge-pune-01":
+            logger.error("FATAL: Production mode requires an explicit EDGE_NODE_ID.")
+            raise RuntimeError("Production mode requires an explicit EDGE_NODE_ID")
+
 # In-memory camera state registry
 CAMERA_STATES = [
     {"cameraId": 1, "name": "CAM-01: Main Dining Area", "state": "CONNECTED", "fps": 2.0, "lastFrame": "2026-11-13T11:30:00Z"},
@@ -31,8 +41,9 @@ MODEL_REGISTRY = [
     {"modelName": "person-detector", "version": "person-det-1.3.0", "task": "M1 Person Detector", "framework": "RTMDet / TensorRT-FP16", "status": "ACTIVE"},
     {"modelName": "table-state-classifier", "version": "table-cls-1.1.0", "task": "M3 Table State", "framework": "MobileNetV3 / ONNX", "status": "ACTIVE"},
     {"modelName": "gesture-classifier", "version": "gesture-conv-0.9.1", "task": "M4 Wave Gesture", "framework": "Keypoint Conv / PyTorch", "status": "ACTIVE"},
-    {"modelName": "sentiment-nlp", "version": "sentiment-indicbert-1.2.0", "task": "M10 Feedback Sentiment", "framework": "IndicBERT", "status": "ACTIVE"},
-    {"modelName": "traffic-forecaster", "version": "traffic-lgbm-1.0.0", "task": "M8 Traffic Quantiles", "framework": "LightGBM", "status": "ACTIVE"},
+    {"modelName": "sentiment-nlp", "version": "sentiment-lexicon-valence-1.1.0", "task": "M10 Feedback Sentiment", "framework": "Contextual Valence Lexicon", "status": "ACTIVE"},
+    {"modelName": "traffic-forecaster", "version": "traffic-seasonal-empirical-1.1.0", "task": "M8 Traffic Quantiles", "framework": "Empirical Residual Quantiles (Hyndman-Fan Type 7)", "status": "ACTIVE"},
+    {"modelName": "demand-forecaster", "version": "demand-recipe-heuristic-1.1.0", "task": "M9 Demand Forecaster", "framework": "Station BOM & Recipe Heuristic", "status": "ACTIVE"},
 ]
 
 # Request models

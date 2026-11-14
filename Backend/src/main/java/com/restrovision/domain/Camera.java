@@ -35,6 +35,7 @@ public class Camera {
     private Instant lastSeenAt = Instant.now();
 
     @Column(name = "target_fps", nullable = false)
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.NUMERIC)
     private Double targetFps = 2.0;
 
     public Camera() {}

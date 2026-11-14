@@ -3,16 +3,24 @@ package com.restrovision.controller;
 import com.restrovision.domain.CustomerFeedback;
 import com.restrovision.domain.RestaurantTable;
 import com.restrovision.domain.ServiceRequest;
+import com.restrovision.domain.TableSession;
 import com.restrovision.dto.FeedbackDtos.CustomerFeedbackRequest;
 import com.restrovision.repository.CustomerFeedbackRepository;
 import com.restrovision.repository.RestaurantTableRepository;
 import com.restrovision.repository.ServiceRequestRepository;
 import com.restrovision.repository.TableSessionRepository;
+import com.restrovision.security.FeedbackRateLimiterService;
+import com.restrovision.security.HtmlSanitizer;
+import com.restrovision.security.LoginRateLimiterService;
 import com.restrovision.service.AlertService;
 import com.restrovision.service.NotificationService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -26,6 +34,8 @@ public class PublicQrController {
     private final CustomerFeedbackRepository feedbackRepository;
     private final AlertService alertService;
     private final NotificationService notificationService;
+    private final FeedbackRateLimiterService feedbackRateLimiter;
+    private final LoginRateLimiterService loginRateLimiterService;
 
     public PublicQrController(
             RestaurantTableRepository tableRepository,
@@ -33,13 +43,17 @@ public class PublicQrController {
             ServiceRequestRepository serviceRequestRepository,
             CustomerFeedbackRepository feedbackRepository,
             AlertService alertService,
-            NotificationService notificationService) {
+            NotificationService notificationService,
+            FeedbackRateLimiterService feedbackRateLimiter,
+            LoginRateLimiterService loginRateLimiterService) {
         this.tableRepository = tableRepository;
         this.sessionRepository = sessionRepository;
         this.serviceRequestRepository = serviceRequestRepository;
         this.feedbackRepository = feedbackRepository;
         this.alertService = alertService;
         this.notificationService = notificationService;
+        this.feedbackRateLimiter = feedbackRateLimiter;
+        this.loginRateLimiterService = loginRateLimiterService;
     }
 
     @GetMapping("/qr/{token}/status")
@@ -109,13 +123,13 @@ public class PublicQrController {
     }
 
     @PostMapping("/feedback")
-    public ResponseEntity<CustomerFeedback> submitFeedback(@RequestBody CustomerFeedbackRequest request) {
-        // P0 Validation: Rating must be strictly between 1 and 5
-        if (request.getRating() == null || request.getRating() < 1 || request.getRating() > 5) {
-            throw new IllegalArgumentException("Invalid rating: " + request.getRating() + ". Rating must be an integer between 1 and 5.");
+    public ResponseEntity<?> submitFeedback(@RequestBody CustomerFeedbackRequest request, HttpServletRequest httpRequest) {
+        // 1. Rating validation: Rating must be strictly between 1 and 5
+        if (request == null || request.getRating() == null || request.getRating() < 1 || request.getRating() > 5) {
+            throw new IllegalArgumentException("Invalid rating. Rating must be an integer between 1 and 5.");
         }
 
-        // P0 Multi-Tenancy Fix: Derive restaurantId from verified table, NEVER hardcode to 1!
+        // 2. Table validation & ownership
         Long tableId = request.getTableId();
         if (tableId == null) {
             throw new IllegalArgumentException("Table ID is required to associate verified feedback.");
@@ -123,17 +137,74 @@ public class PublicQrController {
 
         RestaurantTable table = tableRepository.findById(tableId)
                 .orElseThrow(() -> new IllegalArgumentException("Table not found: " + tableId));
+
+        if ("OUT_OF_SERVICE".equalsIgnoreCase(table.getStatus())) {
+            throw new IllegalArgumentException("Cannot submit feedback for a table that is out of service: " + tableId);
+        }
+
         Long restaurantId = table.getRestaurantId();
+
+        // 3. Session validation & secure session binding
+        Long feedbackSessionId;
+        if (request.getSessionId() != null) {
+            TableSession session = sessionRepository.findByRestaurantIdAndSessionId(restaurantId, request.getSessionId())
+                    .filter(s -> table.getTableId().equals(s.getTableId()))
+                    .orElseThrow(() -> new IllegalArgumentException("Provided sessionId does not belong to table " + tableId));
+
+            // If a new session has started on this table, reject feedback for the superseded/old session
+            if (table.getCurrentSessionId() != null && !table.getCurrentSessionId().equals(session.getSessionId())) {
+                throw new IllegalArgumentException("Session " + request.getSessionId() + " is expired. A new session has already started for table " + tableId);
+            }
+            if (!"ACTIVE".equalsIgnoreCase(session.getStatus()) && (table.getCurrentSessionId() == null || !table.getCurrentSessionId().equals(session.getSessionId()))) {
+                throw new IllegalArgumentException("Session " + request.getSessionId() + " is closed or inactive for table " + tableId);
+            }
+            feedbackSessionId = session.getSessionId();
+        } else {
+            // Missing feedback session ID: establish legitimate current session securely
+            if (table.getCurrentSessionId() == null) {
+                throw new IllegalArgumentException("No active session found for table " + tableId + ". Feedback must be associated with an active dining session.");
+            }
+            TableSession currentSession = sessionRepository.findByRestaurantIdAndSessionId(restaurantId, table.getCurrentSessionId())
+                    .filter(s -> table.getTableId().equals(s.getTableId()) && "ACTIVE".equalsIgnoreCase(s.getStatus()))
+                    .orElseThrow(() -> new IllegalArgumentException("Current session for table " + tableId + " is invalid or inactive."));
+            feedbackSessionId = currentSession.getSessionId();
+        }
+
+        // 4. Payload size limit (BUG-013)
+        String rawComment = request.getComment();
+        if (rawComment != null && rawComment.length() > feedbackRateLimiter.getMaxCommentLength()) {
+            throw new IllegalArgumentException("Feedback comment exceeds maximum allowed length of " + feedbackRateLimiter.getMaxCommentLength() + " characters.");
+        }
+
+        // 5. Plain text sanitization (BUG-009)
+        String cleanComment = HtmlSanitizer.sanitizeComment(rawComment);
+
+        // 6. Anti-Flooding & Abuse Protection (BUG-013)
+        String clientIp = loginRateLimiterService.resolveClientIp(httpRequest);
+        String clientFingerprint = resolveDeviceFingerprint(httpRequest);
+        FeedbackRateLimiterService.FeedbackLimitResult limit = feedbackRateLimiter.checkLimits(
+                clientIp, clientFingerprint, tableId, request.getRating(), cleanComment);
+        if (limit.isBlocked()) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                    HttpStatus.TOO_MANY_REQUESTS, limit.getReason());
+            problem.setType(URI.create("urn:restrovision:error:feedback-rate-limit"));
+            problem.setTitle("Too Many Requests");
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .header("Retry-After", String.valueOf(limit.getRetryAfterSeconds()))
+                    .body(problem);
+        }
+
+        feedbackRateLimiter.recordSubmission(clientIp, clientFingerprint, tableId, request.getRating(), cleanComment);
 
         CustomerFeedback feedback = new CustomerFeedback();
         feedback.setRestaurantId(restaurantId);
         feedback.setTableId(table.getTableId());
-        feedback.setSessionId(request.getSessionId());
+        feedback.setSessionId(feedbackSessionId);
         feedback.setRating(request.getRating());
-        feedback.setCommentText(request.getComment());
+        feedback.setCommentText(cleanComment);
 
         // Simple sentiment & category classification (M10 baseline)
-        String comment = request.getComment() != null ? request.getComment().toLowerCase() : "";
+        String commentLower = cleanComment != null ? cleanComment.toLowerCase() : "";
         if (request.getRating() >= 4) {
             feedback.setSentiment("POSITIVE");
         } else if (request.getRating() <= 2) {
@@ -142,11 +213,11 @@ public class PublicQrController {
             feedback.setSentiment("NEUTRAL");
         }
 
-        if (comment.contains("food") || comment.contains("taste") || comment.contains("delicious") || comment.contains("spicy")) {
+        if (commentLower.contains("food") || commentLower.contains("taste") || commentLower.contains("delicious") || commentLower.contains("spicy")) {
             feedback.setCategory("FOOD_QUALITY");
-        } else if (comment.contains("slow") || comment.contains("quick") || comment.contains("wait") || comment.contains("fast")) {
+        } else if (commentLower.contains("slow") || commentLower.contains("quick") || commentLower.contains("wait") || commentLower.contains("fast")) {
             feedback.setCategory("SERVICE_SPEED");
-        } else if (comment.contains("clean") || comment.contains("dirty") || comment.contains("table")) {
+        } else if (commentLower.contains("clean") || commentLower.contains("dirty") || commentLower.contains("table")) {
             feedback.setCategory("CLEANLINESS");
         } else {
             feedback.setCategory("AMBIENCE");
@@ -154,5 +225,21 @@ public class PublicQrController {
 
         feedback = feedbackRepository.save(feedback);
         return ResponseEntity.ok(feedback);
+    }
+
+    private String resolveDeviceFingerprint(HttpServletRequest request) {
+        if (request == null) {
+            return "DEFAULT";
+        }
+        if (request.getSession(false) != null) {
+            return "SESS:" + request.getSession(false).getId();
+        }
+        String userAgent = request.getHeader("User-Agent");
+        String acceptLang = request.getHeader("Accept-Language");
+        if (org.springframework.util.StringUtils.hasText(userAgent) || org.springframework.util.StringUtils.hasText(acceptLang)) {
+            String raw = (userAgent != null ? userAgent.trim() : "") + "|" + (acceptLang != null ? acceptLang.trim() : "");
+            return "FP:" + Integer.toHexString(raw.hashCode());
+        }
+        return "DEFAULT";
     }
 }

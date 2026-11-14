@@ -1,0 +1,78 @@
+services:
+  backend:
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-backend@sha256:...)}"
+    container_name: restrovision-backend
+    restart: always
+    expose:
+      - "8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=oracle
+      - ORACLE_HOST=${ORACLE_HOST:?ORACLE_HOST is required}
+      - ORACLE_PORT=${ORACLE_PORT:-1521}
+      - ORACLE_SERVICE=${ORACLE_SERVICE:-freepdb1}
+      - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME:?ORACLE_APP_USERNAME is required}
+      - ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD:?ORACLE_APP_PASSWORD is required}
+      - ORACLE_MIGRATION_USERNAME=${ORACLE_MIGRATION_USERNAME:?ORACLE_MIGRATION_USERNAME is required}
+      - ORACLE_MIGRATION_PASSWORD=${ORACLE_MIGRATION_PASSWORD:?ORACLE_MIGRATION_PASSWORD is required}
+      - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET:?RESTROVISION_JWT_SECRET is required}
+      - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
+      - RESTROVISION_COOKIE_SECURE=true
+      - RESTROVISION_TRUSTED_PROXIES=${RESTROVISION_TRUSTED_PROXIES:-172.28.0.0/16,127.0.0.1}
+    networks:
+      - restrovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    image: "${FRONTEND_IMAGE:?FRONTEND_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-frontend@sha256:...)}"
+    container_name: restrovision-frontend
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - restrovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  edge-ai:
+    image: "${EDGE_AI_IMAGE:?EDGE_AI_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-edge-ai@sha256:...)}"
+    container_name: restrovision-edge-ai
+    restart: always
+    expose:
+      - "8000"
+    environment:
+      - SPRING_BOOT_URL=${SPRING_BOOT_URL:-http://backend:8080}
+      - EDGE_NODE_ID=${EDGE_NODE_ID:?EDGE_NODE_ID is required}
+      - RESTAURANT_ID=${RESTAURANT_ID:?RESTAURANT_ID is required}
+      - SERVICE_TOKEN=${SERVICE_TOKEN:?SERVICE_TOKEN (cryptographic edge device JWT) is required}
+      - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - restrovision-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ai/v1/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  restrovision-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

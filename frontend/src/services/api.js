@@ -1,101 +1,98 @@
 const API_BASE = '/api/v1';
 
-export function getAuthToken() {
-  return localStorage.getItem('restrovision_token') || '';
+export function getCsrfToken() {
+  if (typeof document === 'undefined') return '';
+  const match = document.cookie.match(new RegExp('(^| )restro_csrf_token=([^;]+)'));
+  return match ? decodeURIComponent(match[2]) : '';
 }
 
-export function setAuthToken(token) {
-  if (token) {
-    localStorage.setItem('restrovision_token', token);
-  } else {
+// Deprecated stubs to prevent breaking legacy imports
+export function getAuthToken() {
+  return '';
+}
+
+export function setAuthToken() {
+  try {
     localStorage.removeItem('restrovision_token');
-  }
+  } catch (_) {}
 }
 
 export function getRefreshToken() {
-  return localStorage.getItem('restrovision_refresh_token') || '';
+  return '';
 }
 
-export function setRefreshToken(refreshToken) {
-  if (refreshToken) {
-    localStorage.setItem('restrovision_refresh_token', refreshToken);
-  } else {
+export function setRefreshToken() {
+  try {
     localStorage.removeItem('restrovision_refresh_token');
-  }
+  } catch (_) {}
 }
 
 let isRefreshing = false;
 let refreshSubscribers = [];
 
-function onRefreshed(token) {
-  refreshSubscribers.forEach((callback) => callback(token));
+function onRefreshed(success = true) {
+  refreshSubscribers.forEach((callback) => callback(success));
   refreshSubscribers = [];
 }
 
 async function request(endpoint, options = {}) {
-  const token = getAuthToken();
+  const method = (options.method || 'GET').toUpperCase();
+  const csrfToken = getCsrfToken();
+  const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
+
   const headers = {
     'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(isMutating && csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {}),
     ...(options.headers || {}),
   };
 
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
+    credentials: 'include',
     headers,
   });
 
-  // Handle Token Expiry & Automatic Refresh (§3.4)
+  // Handle Token Expiry & Automatic Refresh via HttpOnly Cookies
   if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/refresh')) {
-    const refreshToken = getRefreshToken();
-    if (refreshToken) {
-      if (!isRefreshing) {
-        isRefreshing = true;
-        try {
-          const refreshRes = await fetch(`${API_BASE}/auth/refresh`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refreshToken }),
-          });
-
-          if (refreshRes.ok) {
-            const data = await refreshRes.json();
-            setAuthToken(data.accessToken);
-            isRefreshing = false;
-            onRefreshed(data.accessToken);
-
-            // Retry original request with new token
-            return request(endpoint, {
-              ...options,
-              headers: {
-                ...(options.headers || {}),
-                Authorization: `Bearer ${data.accessToken}`,
-              },
-            });
-          } else {
-            setAuthToken(null);
-            setRefreshToken(null);
-            isRefreshing = false;
-          }
-        } catch (_) {
-          setAuthToken(null);
-          setRefreshToken(null);
-          isRefreshing = false;
-        }
-      } else {
-        // Queue until ongoing refresh completes
-        return new Promise((resolve) => {
-          refreshSubscribers.push((newToken) => {
-            resolve(request(endpoint, {
-              ...options,
-              headers: {
-                ...(options.headers || {}),
-                Authorization: `Bearer ${newToken}`,
-              },
-            }));
-          });
+    if (!isRefreshing) {
+      isRefreshing = true;
+      try {
+        const refreshCsrf = getCsrfToken();
+        const refreshRes = await fetch(`${API_BASE}/auth/refresh`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(refreshCsrf ? { 'X-CSRF-TOKEN': refreshCsrf } : {}),
+          },
+          body: JSON.stringify({}),
         });
+
+        if (refreshRes.ok) {
+          isRefreshing = false;
+          onRefreshed(true);
+
+          // Retry original request with refreshed cookies
+          return request(endpoint, options);
+        } else {
+          isRefreshing = false;
+          onRefreshed(false);
+        }
+      } catch (_) {
+        isRefreshing = false;
+        onRefreshed(false);
       }
+    } else {
+      // Queue until ongoing refresh completes
+      return new Promise((resolve, reject) => {
+        refreshSubscribers.push((success) => {
+          if (success !== false) {
+            resolve(request(endpoint, options));
+          } else {
+            reject(new Error('Session expired. Please log in again.'));
+          }
+        });
+      });
     }
   }
 
@@ -104,7 +101,9 @@ async function request(endpoint, options = {}) {
     try {
       const errJson = await response.json();
       errMessage = errJson.detail || errJson.message || errJson.title || errMessage;
-    } catch (_) {}
+    } catch (parseErr) {
+      console.warn(`[api] Non-JSON error body on ${endpoint} (${response.status}):`, parseErr?.message || parseErr);
+    }
     throw new Error(errMessage);
   }
 
@@ -118,6 +117,7 @@ async function request(endpoint, options = {}) {
 export const api = {
   // Auth
   login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
   getCurrentUser: () => request('/auth/me'),
 
   // Tables

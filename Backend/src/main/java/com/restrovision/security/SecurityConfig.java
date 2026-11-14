@@ -59,9 +59,13 @@ public class SecurityConfig {
                 .requestMatchers(
                     "/api/v1/auth/login",
                     "/api/v1/auth/refresh",
+                    "/api/v1/auth/logout",
                     "/api/v1/public/qr/**",
                     "/api/v1/public/feedback",
                     "/ws/**",
+                    "/actuator/health",
+                    "/actuator/health/**",
+                    "/actuator/info",
                     "/v3/api-docs/**",
                     "/swagger-ui/**",
                     "/swagger-ui.html"
@@ -83,8 +87,10 @@ public class SecurityConfig {
                 .toList();
         configuration.setAllowedOrigins(origins.isEmpty() ? List.of("http://localhost:5173") : origins);
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Signature", "Idempotency-Key", "X-Restaurant-Id"));
-        configuration.setExposedHeaders(List.of("Authorization"));
+        configuration.setAllowedHeaders(Arrays.asList(
+                "Authorization", "Content-Type", "X-Signature", "Idempotency-Key",
+                "X-Restaurant-Id", "X-CSRF-TOKEN", "X-XSRF-TOKEN", "X-Requested-With"));
+        configuration.setExposedHeaders(List.of("Authorization", "Set-Cookie"));
         configuration.setAllowCredentials(true);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

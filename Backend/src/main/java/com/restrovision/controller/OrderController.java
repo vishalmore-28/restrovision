@@ -66,4 +66,12 @@ public class OrderController {
         Long restaurantId = TenantContext.getRestaurantId();
         return ResponseEntity.ok(orderService.getDelayedOrders(restaurantId));
     }
+
+    @GetMapping("/kds-queue")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER', 'KITCHEN')")
+    public ResponseEntity<List<com.restrovision.domain.OrderItem>> getKdsQueue(
+            @RequestParam(required = false) Long stationId) {
+        Long restaurantId = TenantContext.getRestaurantId();
+        return ResponseEntity.ok(orderService.getKitchenQueue(restaurantId, stationId));
+    }
 }

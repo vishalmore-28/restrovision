@@ -12,6 +12,10 @@ import java.util.*;
 @Component
 public class JwtTokenProvider {
 
+    public static final String EDGE_ISSUER = "restrovision-edge-auth";
+    public static final String EDGE_AUDIENCE = "restrovision-backend";
+    public static final String TOKEN_TYPE_EDGE = "EDGE_DEVICE";
+
     private final SecretKey secretKey;
     private final long accessTokenExpirationMs;
     private final long refreshTokenExpirationMs;
@@ -23,6 +27,28 @@ public class JwtTokenProvider {
         this.secretKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.accessTokenExpirationMs = accessTokenExpirationMs;
         this.refreshTokenExpirationMs = refreshTokenExpirationMs;
+    }
+
+    public String generateEdgeToken(String edgeNodeId, Long restaurantId, long expirationMs) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + expirationMs);
+
+        return Jwts.builder()
+                .issuer(EDGE_ISSUER)
+                .audience().add(EDGE_AUDIENCE).and()
+                .subject(edgeNodeId)
+                .claim("type", TOKEN_TYPE_EDGE)
+                .claim("restaurantId", restaurantId)
+                .claim("roles", Collections.singletonList("AI_SERVICE"))
+                .issuedAt(now)
+                .expiration(expiryDate)
+                .signWith(secretKey)
+                .compact();
+    }
+
+    public String generateEdgeToken(String edgeNodeId, Long restaurantId) {
+        // Default: 30 days validity for edge device tokens
+        return generateEdgeToken(edgeNodeId, restaurantId, 30L * 24 * 3600 * 1000);
     }
 
     public String generateAccessToken(Long userId, Long restaurantId, String email, Set<String> roles) {

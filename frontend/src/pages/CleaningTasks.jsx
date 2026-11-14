@@ -20,6 +20,7 @@ export default function CleaningTasks() {
   const [tasks, setTasks] = useState(INITIAL_TASKS);
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   const loadTasks = () => {
     api.getTasks()
@@ -28,7 +29,7 @@ export default function CleaningTasks() {
           setTasks(all.filter((t) => t.taskType === 'TABLE_CLEANING' || t.taskType === 'SPILL_CLEANUP'));
         }
       })
-      .catch(() => {})
+      .catch((err) => console.warn('[CleaningTasks] Failed to fetch tasks:', err?.message || err))
       .finally(() => setLoading(false));
   };
 
@@ -41,17 +42,25 @@ export default function CleaningTasks() {
   const handleStart = async (taskId) => {
     try {
       await api.startTask(taskId);
-    } catch (_) {}
-    setTasks((prev) => prev.map((t) => (t.taskId === taskId ? { ...t, status: 'IN_PROGRESS' } : t)));
+      setTasks((prev) => prev.map((t) => (t.taskId === taskId ? { ...t, status: 'IN_PROGRESS' } : t)));
+    } catch (err) {
+      console.error('[CleaningTasks] Failed to start task:', err);
+      setErrorMsg('Failed to start cleaning task. Please try again.');
+      setTimeout(() => setErrorMsg(''), 4000);
+    }
   };
 
   const handleComplete = async (taskId, tableCode) => {
     try {
       await api.completeTask(taskId);
-    } catch (_) {}
-    setTasks((prev) => prev.filter((t) => t.taskId !== taskId));
-    setSuccessMsg(`Table ${tableCode} sanitized & returned to AVAILABLE on floor!`);
-    setTimeout(() => setSuccessMsg(''), 4000);
+      setTasks((prev) => prev.filter((t) => t.taskId !== taskId));
+      setSuccessMsg(`Table ${tableCode} sanitized & returned to AVAILABLE on floor!`);
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      console.error('[CleaningTasks] Failed to complete task:', err);
+      setErrorMsg('Failed to complete cleaning task. Please try again.');
+      setTimeout(() => setErrorMsg(''), 4000);
+    }
   };
 
   const openTasks = tasks.filter((t) => t.status === 'OPEN' || t.status === 'ASSIGNED' || t.status === 'IN_PROGRESS');
@@ -89,6 +98,19 @@ export default function CleaningTasks() {
         >
           <ShieldCheck className="w-4 h-4 shrink-0" />
           <span className="font-semibold">{successMsg}</span>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div
+          className="p-3.5 rounded-xl border text-xs flex items-center gap-2.5 shadow-sm"
+          style={{
+            backgroundColor: 'var(--status-critical-bg)',
+            borderColor: 'var(--status-critical-border)',
+            color: 'var(--status-critical)',
+          }}
+        >
+          <span className="font-semibold">{errorMsg}</span>
         </div>
       )}
 

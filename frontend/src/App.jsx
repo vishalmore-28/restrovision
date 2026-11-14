@@ -136,7 +136,7 @@ function MainLayout() {
           onCloseMobile={() => setMobileMenuOpen(false)}
         />
         <main
-          className="flex-1 p-4 md:p-6 overflow-y-auto h-[calc(100vh-61px)] transition-colors duration-150 w-full"
+          className="flex-1 p-3 sm:p-4 md:p-6 overflow-y-auto overflow-x-hidden h-[calc(100vh-61px)] transition-colors duration-150 w-full max-w-full box-border"
           style={{ backgroundColor: 'var(--bg-main)' }}
         >
           {renderContent()}

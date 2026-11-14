@@ -1,9 +1,7 @@
-version: '3.8'
-
 services:
   backend:
     build:
-      context: ./backend
+      context: ./Backend
       dockerfile: Dockerfile
     container_name: restrovision-backend
     ports:
@@ -11,12 +9,12 @@ services:
     environment:
       - SPRING_PROFILES_ACTIVE=default
       - RESTROVISION_EDGE_HMAC_SECRET=8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f
-      - RESTROVISION_EDGE_SERVICE_TOKEN=edge-token-pune-01
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/v3/api-docs"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 20s
 
   frontend:
     build:
@@ -27,7 +25,14 @@ services:
       - "5173:80"
       - "80:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   edge-ai:
     build:
@@ -43,7 +48,14 @@ services:
       - SERVICE_TOKEN=edge-token-pune-01
       - HMAC_SECRET=8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ai/v1/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   default:

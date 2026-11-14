@@ -13,7 +13,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
   useEffect(() => {
     api.getActiveAlerts()
       .then(setAlerts)
-      .catch(() => {});
+      .catch((err) => console.warn('[Navbar] Failed to fetch active alerts:', err?.message || err));
 
     const unsub = wsService.subscribe('/topic/restaurants/1/alerts', (newAlert) => {
       setAlerts((prev) => {
@@ -32,7 +32,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
 
   return (
     <header
-      className="border-b px-4 md:px-5 py-3 flex items-center justify-between sticky top-0 z-40 transition-colors duration-150"
+      className="border-b px-2.5 sm:px-4 md:px-5 py-2.5 sm:py-3 flex items-center justify-between sticky top-0 z-40 transition-colors duration-150 w-full max-w-full box-border overflow-hidden"
       style={{
         backgroundColor: 'var(--bg-card)',
         borderColor: 'var(--border)',
@@ -40,11 +40,11 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
       }}
     >
       {/* Brand & System Status */}
-      <div className="flex items-center gap-2.5 sm:gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         {/* Mobile menu toggle button */}
         <button
           onClick={onToggleMobileMenu}
-          className="md:hidden p-1.5 rounded-lg border transition-colors duration-150 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400"
+          className="md:hidden p-1.5 rounded-lg border transition-colors duration-150 flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 shrink-0"
           style={{
             backgroundColor: 'var(--bg-main)',
             borderColor: 'var(--border)',
@@ -56,7 +56,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
         </button>
 
         <div
-          className="w-9 h-9 rounded-xl flex items-center justify-center font-black text-sm tracking-tighter shrink-0"
+          className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl flex items-center justify-center font-black text-sm tracking-tighter shrink-0"
           style={{
             backgroundColor: 'var(--btn-primary)',
             color: 'var(--btn-primary-text)',
@@ -64,18 +64,18 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
         >
           Ψ
         </div>
-        <div>
-          <span className="font-extrabold text-sm sm:text-base tracking-tight block leading-tight" style={{ color: 'var(--text-primary)' }}>
+        <div className="min-w-0">
+          <span className="font-extrabold text-sm sm:text-base tracking-tight block leading-tight truncate" style={{ color: 'var(--text-primary)' }}>
             RESTROVISION
           </span>
-          <p className="text-[11px] sm:text-xs leading-tight" style={{ color: 'var(--text-muted)' }}>
+          <p className="text-[10px] sm:text-xs leading-tight truncate hidden xs:block" style={{ color: 'var(--text-muted)' }}>
             Operations &amp; Edge Vision
           </p>
         </div>
       </div>
 
       {/* Center & Right Controls */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
         {/* WebSocket Live Status */}
         <div
           className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border"
@@ -145,7 +145,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
 
         {/* Active User Info & Sign Out */}
         <div
-          className="flex items-center gap-2.5 pl-3 border-l"
+          className="flex items-center gap-1.5 sm:gap-2.5 pl-2 sm:pl-3 border-l"
           style={{ borderColor: 'var(--border)' }}
         >
           <div

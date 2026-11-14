@@ -42,7 +42,12 @@ public class TableSession {
     private Integer partySizeEst;
 
     @Column(name = "pre_attended_flag")
+    @Convert(converter = org.hibernate.type.NumericBooleanConverter.class)
     private Boolean preAttendedFlag = false;
+
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
 
     public TableSession() {}
 
@@ -90,4 +95,7 @@ public class TableSession {
 
     public Boolean getPreAttendedFlag() { return preAttendedFlag; }
     public void setPreAttendedFlag(Boolean preAttendedFlag) { this.preAttendedFlag = preAttendedFlag; }
+
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 }

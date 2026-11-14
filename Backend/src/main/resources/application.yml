@@ -9,7 +9,13 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 1
+    locations: classpath:db/migration
   jpa:
+    open-in-view: false
     hibernate:
       ddl-auto: update
     properties:
@@ -24,6 +30,18 @@ spring:
       settings:
         web-allow-others: false
 
+# Spring Boot Actuator Configuration for Production Health & Readiness Probes
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
 # RESTROVISION Platform Configuration
 restrovision:
   jwt:
@@ -31,8 +49,11 @@ restrovision:
     access-token-expiration-ms: ${RESTROVISION_JWT_EXPIRATION_MS:900000} # 15 minutes
     refresh-token-expiration-ms: ${RESTROVISION_JWT_REFRESH_EXPIRATION_MS:604800000} # 7 days
   edge:
-    hmac-secret: ${RESTROVISION_HMAC_SECRET:8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f}
+    hmac-secret: ${RESTROVISION_EDGE_HMAC_SECRET:${RESTROVISION_HMAC_SECRET:8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f}}
     service-token: ${RESTROVISION_EDGE_TOKEN:edge-token-pune-01}
+    freshness:
+      max-event-age-seconds: ${RESTROVISION_MAX_EVENT_AGE_SECONDS:7200} # 2 hours: covers max 10 outbox retries + network lag
+      clock-skew-tolerance-seconds: ${RESTROVISION_CLOCK_SKEW_TOLERANCE_SECONDS:600} # 10 minutes: covers IoT RTC / NTP drift
   state-engine:
     staff-override-lock-seconds: 120
     waiting-time-attention-seconds: 120   # 2 min
@@ -45,6 +66,20 @@ restrovision:
       service-requests: 1.5
       undelivered-orders: 1.0
       open-tasks: 0.5
+  security:
+    cookie:
+      secure: ${RESTROVISION_COOKIE_SECURE:false}
+    rate-limit:
+      max-attempts-per-ip: ${RESTROVISION_LOGIN_MAX_IP_ATTEMPTS:10}
+      max-attempts-per-account: ${RESTROVISION_LOGIN_MAX_ACCOUNT_ATTEMPTS:5}
+      window-seconds: ${RESTROVISION_LOGIN_WINDOW_SECONDS:60}
+      trusted-proxies: ${RESTROVISION_TRUSTED_PROXIES:127.0.0.1,::1,0:0:0:0:0:0:0:1}
+    feedback:
+      max-per-ip-window: ${RESTROVISION_FEEDBACK_MAX_PER_IP:10}
+      ip-window-seconds: ${RESTROVISION_FEEDBACK_WINDOW_SECONDS:300}
+      table-cooldown-seconds: ${RESTROVISION_FEEDBACK_TABLE_COOLDOWN:15}
+      duplicate-window-seconds: ${RESTROVISION_FEEDBACK_DUPLICATE_WINDOW:60}
+      max-comment-length: ${RESTROVISION_FEEDBACK_MAX_COMMENT_LENGTH:1000}
 
 # Swagger OpenAPI UI
 springdoc:

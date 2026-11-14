@@ -3,6 +3,7 @@ package com.restrovision.service;
 import com.restrovision.domain.*;
 import com.restrovision.repository.*;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -38,10 +39,12 @@ public class AnalyticsService {
         this.employeeRepository = employeeRepository;
     }
 
+    @Transactional(readOnly = true)
     public Map<String, Object> getOverview(Long restaurantId) {
         return getOverview(restaurantId, "daily");
     }
 
+    @Transactional(readOnly = true)
     public Map<String, Object> getOverview(Long restaurantId, String timeframe) {
         String mode = (timeframe != null && !timeframe.isBlank()) ? timeframe.toLowerCase() : "daily";
         Instant now = Instant.now();

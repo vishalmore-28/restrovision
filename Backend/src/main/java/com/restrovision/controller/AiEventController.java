@@ -74,6 +74,13 @@ public class AiEventController {
 
         // 3. Strict Tenant Isolation: Edge credentials dictate the tenant. Client cannot inject arbitrary restaurantId!
         Long verifiedRestaurantId = TenantContext.getRestaurantId();
+        if (verifiedRestaurantId == null) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                    HttpStatus.UNAUTHORIZED, "No tenant context associated with edge credentials");
+            problem.setType(URI.create("urn:restrovision:error:unauthorized"));
+            problem.setTitle("Unauthorized Tenant");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(problem);
+        }
         envelope.setRestaurantId(verifiedRestaurantId);
 
         Map<String, Object> result = eventIngestionService.ingestEvent(envelope);
