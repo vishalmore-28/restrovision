@@ -31,8 +31,12 @@ The RESTROVISION v2.0 database layer enforces strict enterprise separation of du
 
 ALTER SESSION SET CONTAINER = FREEPDB1;
 
+-- Secure interactive password prompt in SQL*Plus (masked input, zero plaintext terminal echo):
+ACCEPT migrator_password CHAR PROMPT 'Enter password for RESTROVISION_MIGRATOR: ' HIDE
+ACCEPT app_password CHAR PROMPT 'Enter password for RESTROVISION_APP: ' HIDE
+
 -- 1. Create Migration Account (Schema Owner & DDL Administrator)
-CREATE USER restrovision_migrator IDENTIFIED BY "&ENTER_MIGRATOR_SECURE_PASSWORD"
+CREATE USER restrovision_migrator IDENTIFIED BY "&migrator_password"
   DEFAULT TABLESPACE users
   TEMPORARY TABLESPACE temp
   QUOTA 10G ON users;
@@ -47,12 +51,16 @@ GRANT CREATE TRIGGER TO restrovision_migrator;
 GRANT CREATE SYNONYM TO restrovision_migrator;
 
 -- 2. Create Runtime Application Account (Strict Least-Privilege DML Only)
-CREATE USER restrovision_app IDENTIFIED BY "&ENTER_APP_RUNTIME_SECURE_PASSWORD"
+CREATE USER restrovision_app IDENTIFIED BY "&app_password"
   DEFAULT TABLESPACE users
   TEMPORARY TABLESPACE temp
   QUOTA 0 ON users; -- Zero table creation quota
 
 GRANT CREATE SESSION TO restrovision_app;
+
+-- Clear password substitution variables from SQL*Plus session memory immediately:
+UNDEFINE migrator_password
+UNDEFINE app_password
 
 -- 3. Dedicated Application Role for Post-Migration Grants
 CREATE ROLE restrovision_app_role;

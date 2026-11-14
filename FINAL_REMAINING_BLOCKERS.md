@@ -68,8 +68,12 @@ However, the enterprise release gate remains **LOCKED**. Production cutover and 
      ```
   2. Execute the official dual-account provisioning script:
      ```sql
+     -- Prompt for passwords securely without terminal echo (SQL*Plus does NOT expand shell $env variables)
+     ACCEPT migrator_password CHAR PROMPT 'Enter password for RESTROVISION_MIGRATOR: ' HIDE
+     ACCEPT app_password CHAR PROMPT 'Enter password for RESTROVISION_APP: ' HIDE
+
      -- 1. Create Migration Schema (DDL Owner)
-     CREATE USER RESTROVISION_MIGRATOR IDENTIFIED BY "${FLYWAY_PASSWORD}"
+     CREATE USER RESTROVISION_MIGRATOR IDENTIFIED BY "&migrator_password"
        DEFAULT TABLESPACE USERS
        QUOTA 10G ON USERS;
 
@@ -77,11 +81,15 @@ However, the enterprise release gate remains **LOCKED**. Production cutover and 
        TO RESTROVISION_MIGRATOR;
 
      -- 2. Create Application Runtime Schema (Strict Least-Privilege DML Only)
-     CREATE USER RESTROVISION_APP IDENTIFIED BY "${APP_RUNTIME_PASSWORD}"
+     CREATE USER RESTROVISION_APP IDENTIFIED BY "&app_password"
        DEFAULT TABLESPACE USERS
        QUOTA 0 ON USERS; -- Zero table creation quota
 
      GRANT CREATE SESSION TO RESTROVISION_APP;
+
+     -- Clear substitution variables from session memory immediately
+     UNDEFINE migrator_password
+     UNDEFINE app_password
 
      -- 3. Create Runtime Role
      CREATE ROLE RESTROVISION_APP_ROLE;

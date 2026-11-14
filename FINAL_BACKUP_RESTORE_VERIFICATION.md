@@ -116,8 +116,15 @@ SELECT installed_rank, version, description, type, script, checksum, success
 FROM RESTROVISION_RECOVERY.flyway_schema_history 
 ORDER BY installed_rank;
 
--- Point 5: Cleanup Transient Recovery Schema
-DROP USER RESTROVISION_RECOVERY CASCADE;
+-- Point 5: Cleanup Transient Recovery Schema (STRICTLY in disposable sandbox TESTPDB only)
+-- Programmatic Safety Guard: Verify current container is NOT primary/production before dropping:
+BEGIN
+  IF SYS_CONTEXT('USERENV', 'CON_NAME') IN ('FREEPDB1', 'ORCLPDB1', 'CDB$ROOT') THEN
+    RAISE_APPLICATION_ERROR(-20001, 'SAFETY GUARD: Destructive DROP USER prohibited in primary or production PDB. Restore tests must be executed in isolated TESTPDB.');
+  END IF;
+  EXECUTE IMMEDIATE 'DROP USER RESTROVISION_RECOVERY CASCADE';
+END;
+/
 ```
 
 ---
@@ -131,11 +138,13 @@ All RESTROVISION v2.0 Flyway SQL migrations (`V1__init_core_schema.sql` and `V2_
 - Foreign keys and check constraints are non-blocking.
 - **Rollback Philosophy:** In the event of an application release failure, the application tier is rolled back to the previous container image. Because migrations are additive, the previous application version continues functioning against the updated database schema without schema rollback.
 
-### 4.2 Strict Prohibition Against Destructive Commands
-> [!WARNING]
-> **PROHIBITION OF `DROP USER ... CASCADE`:**  
-> The command `DROP USER RESTROVISION_MIGRATOR CASCADE` or `DROP USER RESTROVISION_APP CASCADE` must NEVER appear in any production deployment, migration, or automated rollback runbook.  
-> Dropping schemas destroys all audit trails, historical financial ledgers, and tenant configurations, violating SOX and PCI-DSS compliance.
+### 4.2 Strict Prohibition Against Destructive Production Commands vs Disposable Sandboxes
+> [!CAUTION]
+> **ABSOLUTE PROHIBITION OF DESTRUCTIVE COMMANDS IN PRODUCTION:**  
+> The commands `DROP USER RESTROVISION_MIGRATOR CASCADE;` and `DROP USER RESTROVISION_APP CASCADE;` are strictly and permanently prohibited from all production deployment, migration, operations, and rollback runbooks. Dropping schemas destroys all audit trails, financial ledgers, and multi-tenant data, violating compliance requirements.
+> 
+> **Disposable Sandbox Distinction:**  
+> Destructive cleanup (`DROP USER RESTROVISION_RECOVERY CASCADE`) is restricted exclusively to ephemeral, disposable test sandboxes (e.g. `TESTPDB`) to clean up transient verification artifacts after a backup import test has been certified. It is programmatically blocked via PL/SQL safety guards from executing inside primary or production PDBs.
 
 ---
 
