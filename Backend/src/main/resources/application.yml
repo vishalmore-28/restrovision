@@ -1,0 +1,56 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: restrovision-backend
+  datasource:
+    url: jdbc:h2:mem:restrovision;MODE=Oracle;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+        format_sql: false
+    show-sql: false
+  h2:
+    console:
+      enabled: false
+      path: /h2-console
+      settings:
+        web-allow-others: false
+
+# RESTROVISION Platform Configuration
+restrovision:
+  jwt:
+    secret: ${RESTROVISION_JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+    access-token-expiration-ms: ${RESTROVISION_JWT_EXPIRATION_MS:900000} # 15 minutes
+    refresh-token-expiration-ms: ${RESTROVISION_JWT_REFRESH_EXPIRATION_MS:604800000} # 7 days
+  edge:
+    hmac-secret: ${RESTROVISION_HMAC_SECRET:8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f}
+    service-token: ${RESTROVISION_EDGE_TOKEN:edge-token-pune-01}
+  state-engine:
+    staff-override-lock-seconds: 120
+    waiting-time-attention-seconds: 120   # 2 min
+    waiting-time-escalated-seconds: 300   # 5 min
+    waiting-time-critical-seconds: 600    # 10 min
+    prep-delay-factor: 1.5
+    delivery-unconfirmed-escalate-seconds: 120 # 2 min
+    workload-weights:
+      occupied-tables: 1.0
+      service-requests: 1.5
+      undelivered-orders: 1.0
+      open-tasks: 0.5
+
+# Swagger OpenAPI UI
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: method

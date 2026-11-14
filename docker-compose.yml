@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: restrovision-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=default
+      - RESTROVISION_EDGE_HMAC_SECRET=8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f
+      - RESTROVISION_EDGE_SERVICE_TOKEN=edge-token-pune-01
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v3/api-docs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: restrovision-frontend
+    ports:
+      - "5173:80"
+      - "80:80"
+    depends_on:
+      - backend
+
+  edge-ai:
+    build:
+      context: ./edge-ai
+      dockerfile: Dockerfile
+    container_name: restrovision-edge-ai
+    ports:
+      - "8000:8000"
+    environment:
+      - SPRING_BOOT_URL=http://backend:8080
+      - EDGE_NODE_ID=edge-pune-01
+      - RESTAURANT_ID=1
+      - SERVICE_TOKEN=edge-token-pune-01
+      - HMAC_SECRET=8f4a2b1c9e3d7a5f6e8b0c2d4e6f8a0b1c3d5e7f9a1b3c5d7e9f1a3b5c7d9e1f
+    depends_on:
+      - backend
+
+networks:
+  default:
+    name: restrovision-network

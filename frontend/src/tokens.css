@@ -1,0 +1,68 @@
+/* Hallmark · theme: pure-monochrome-minimal · posture: restrained · shape: app screen · nav: N1 · hero: Settled */
+
+:root {
+  /* LIGHT MODE - Minimal Off-White Palette with High Contrast Readability */
+  --bg-main: #F8F8F6;
+  --bg-card: #FFFFFF;
+  --bg-sidebar: #F3F3F0;
+  --border: #E4E3DC;
+  --border-hover: #D1D0C9;
+  --text-primary: #18181B;
+  --text-secondary: #3F3F46;
+  --text-muted: #52525B;
+  --btn-primary: #18181B;
+  --btn-primary-text: #FFFFFF;
+  --btn-primary-hover: #27272A;
+  --surface-hover: #EFEFED;
+
+  /* Semantic Operational Highlights - Soft, Light & Delightful (Non-Neon) */
+  --status-available: #15803D;
+  --status-available-bg: #ECFDF5;
+  --status-available-border: #A7F3D0;
+
+  --status-occupied: #B45309;
+  --status-occupied-bg: #FFFBEB;
+  --status-occupied-border: #FDE68A;
+
+  --status-critical: #BE123C;
+  --status-critical-bg: #FFF1F2;
+  --status-critical-border: #FECDD3;
+
+  --status-info: #0369A1;
+  --status-info-bg: #F0F9FF;
+  --status-info-border: #BAE6FD;
+}
+
+:root[data-theme="dark"],
+.dark {
+  /* DARK MODE - Minimal Monochromatic Palette */
+  --bg-main: #121212;
+  --bg-card: #181818;
+  --bg-sidebar: #141414;
+  --border: #2C2C2C;
+  --border-hover: #3D3D3D;
+  --text-primary: #F4F4F5;
+  --text-secondary: #D4D4D8;
+  --text-muted: #A1A1AA;
+  --btn-primary: #F4F4F5;
+  --btn-primary-text: #121212;
+  --btn-primary-hover: #E4E4E7;
+  --surface-hover: #222222;
+
+  /* Semantic Operational Highlights - Dark Mode Muted */
+  --status-available: #4ADE80;
+  --status-available-bg: rgba(74, 222, 128, 0.12);
+  --status-available-border: rgba(74, 222, 128, 0.3);
+
+  --status-occupied: #FBBF24;
+  --status-occupied-bg: rgba(251, 191, 36, 0.12);
+  --status-occupied-border: rgba(251, 191, 36, 0.3);
+
+  --status-critical: #F87171;
+  --status-critical-bg: rgba(248, 113, 113, 0.12);
+  --status-critical-border: rgba(248, 113, 113, 0.3);
+
+  --status-info: #94A3B8;
+  --status-info-bg: rgba(148, 163, 184, 0.12);
+  --status-info-border: rgba(148, 163, 184, 0.3);
+}

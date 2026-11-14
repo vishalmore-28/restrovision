@@ -1,0 +1,15 @@
+spring:
+  config:
+    activate:
+      on-profile: oracle
+  datasource:
+    url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:ORCLPDB1}
+    driver-class-name: oracle.jdbc.OracleDriver
+    username: ${ORACLE_USERNAME:restrovision}
+    password: ${ORACLE_PASSWORD:restrovision123}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.OracleDialect

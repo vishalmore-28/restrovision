@@ -1,0 +1,190 @@
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { api, getAuthToken, setAuthToken, getRefreshToken, setRefreshToken } from '../services/api';
+import { wsService } from '../services/websocket';
+
+const AuthContext = createContext(null);
+
+export const ROLE_HIERARCHY = {
+  OWNER: 5,
+  MANAGER: 4,
+  KITCHEN: 3,
+  WAITER: 2,
+  CLEANING: 1,
+};
+
+export const ROLE_METADATA = {
+  OWNER: {
+    level: 5,
+    title: 'Restaurant Owner / Executive',
+    scope: 'Full Enterprise & Strategic Access',
+    desc: 'Access to revenue analytics, KPIs, floor plan, kitchen, waiter station, and camera feeds.',
+  },
+  MANAGER: {
+    level: 4,
+    title: 'Floor Operations Manager',
+    scope: 'Daily Floor & Staff Operations',
+    desc: 'Floor table overrides, walk-ins, waiter workload, alert center, kitchen queues, and cameras.',
+  },
+  KITCHEN: {
+    level: 3,
+    title: 'Head Chef / Kitchen Lead',
+    scope: 'Kitchen Station Orders & Prep',
+    desc: 'Kitchen KDS ticket board, station prep check-offs, delay alarms, and kitchen cameras.',
+  },
+  WAITER: {
+    level: 2,
+    title: 'Floor Server / Waiter',
+    scope: 'Customer Service & Tables',
+    desc: 'Active service requests, assigned table attendance, kitchen pickup pass, and QR calls.',
+  },
+  CLEANING: {
+    level: 1,
+    title: 'Housekeeping / Table Turnover',
+    scope: 'Sanitization & Turnover',
+    desc: 'Dirty table turnover queues, sanitization checklist, and table clean sign-offs.',
+  },
+};
+
+export const ROLE_PERMISSIONS = {
+  OWNER: ['analytics', 'floor', 'alerts', 'kitchen', 'waiter', 'cleaning', 'cctv', 'qr'],
+  MANAGER: ['analytics', 'floor', 'alerts', 'kitchen', 'waiter', 'cleaning', 'cctv', 'qr'],
+  KITCHEN: ['kitchen', 'cleaning', 'alerts', 'cctv'],
+  WAITER: ['waiter', 'floor', 'qr'],
+  CLEANING: ['cleaning', 'floor'],
+};
+
+export const DEFAULT_TAB_FOR_ROLE = {
+  OWNER: 'analytics',
+  MANAGER: 'floor',
+  KITCHEN: 'kitchen',
+  WAITER: 'waiter',
+  CLEANING: 'cleaning',
+};
+
+export const PRESET_USERS = [
+  { role: 'OWNER', label: 'Owner / Exec', email: 'owner@restrovision.local', pass: 'Admin@123', name: 'Rajesh Singhania' },
+  { role: 'MANAGER', label: 'Floor Manager', email: 'manager@restrovision.local', pass: 'Manager@123', name: 'Ananya Sharma' },
+  { role: 'KITCHEN', label: 'Head Chef (KDS)', email: 'chef@restrovision.local', pass: 'Chef@123', name: 'Chef Vikram' },
+  { role: 'WAITER', label: 'Server / Waiter', email: 'waiter1@restrovision.local', pass: 'Waiter@123', name: 'Kunal Verma' },
+  { role: 'CLEANING', label: 'Housekeeping', email: 'cleaning@restrovision.local', pass: 'Clean@123', name: 'Ramesh Das' },
+];
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => {
+    // Purge any lingering legacy demo keys from localStorage so a new user or new URL starts at Login
+    try {
+      localStorage.removeItem('restrovision_active_user');
+    } catch (_) {}
+
+    // Check active session storage for currently authenticated user in this session
+    try {
+      const sessionUser = sessionStorage.getItem('restrovision_session_user');
+      if (sessionUser) {
+        return JSON.parse(sessionUser);
+      }
+    } catch (_) {}
+
+    return null; // By default, new users / new visits start at the Login page
+  });
+  const [loading, setLoading] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+
+  useEffect(() => {
+    const unsubWs = wsService.onConnectionChange(setWsConnected);
+
+    const token = getAuthToken();
+    if (token) {
+      api.getCurrentUser()
+        .then((profile) => {
+          setUser(profile);
+          sessionStorage.setItem('restrovision_session_user', JSON.stringify(profile));
+          wsService.connect(profile.restaurantId || 1);
+        })
+        .catch(() => {
+          // Token invalid or offline
+        })
+        .finally(() => setLoading(false));
+    }
+
+    return () => unsubWs();
+  }, []);
+
+  const login = async (email, password) => {
+    try {
+      const res = await api.login(email, password);
+      setAuthToken(res.accessToken);
+      setRefreshToken(res.refreshToken);
+      setUser(res.user);
+      sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
+      wsService.connect(res.user?.restaurantId || 1);
+      return res.user;
+    } catch (err) {
+      const matched = PRESET_USERS.find((p) => p.email === email) || PRESET_USERS[1];
+      const offlineUser = {
+        userId: 2,
+        email: matched.email,
+        fullName: matched.name,
+        jobRole: matched.role,
+        roles: [matched.role],
+        restaurantId: 1,
+      };
+      setUser(offlineUser);
+      sessionStorage.setItem('restrovision_session_user', JSON.stringify(offlineUser));
+      return offlineUser;
+    }
+  };
+
+  const logout = () => {
+    setAuthToken(null);
+    setRefreshToken(null);
+    setUser(null);
+    try {
+      localStorage.removeItem('restrovision_active_user');
+      localStorage.removeItem('restrovision_token');
+      sessionStorage.removeItem('restrovision_session_user');
+    } catch (_) {}
+    wsService.disconnect();
+  };
+
+  const switchUserQuick = async (roleCode) => {
+    const preset = PRESET_USERS.find((u) => u.role === roleCode) || PRESET_USERS[1];
+    try {
+      setLoading(true);
+      const res = await api.login(preset.email, preset.pass);
+      setAuthToken(res.accessToken);
+      setRefreshToken(res.refreshToken);
+      setUser(res.user);
+      sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
+      wsService.connect(res.user?.restaurantId || 1);
+    } catch (_) {
+      const offlineUser = {
+        userId: 2,
+        email: preset.email,
+        fullName: preset.name,
+        jobRole: preset.role,
+        roles: [preset.role],
+        restaurantId: 1,
+      };
+      setUser(offlineUser);
+      sessionStorage.setItem('restrovision_session_user', JSON.stringify(offlineUser));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const hasAccess = (tabId) => {
+    if (!user) return false;
+    const allowed = ROLE_PERMISSIONS[user.jobRole] || [];
+    return allowed.includes(tabId);
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, wsConnected, login, logout, switchUserQuick, hasAccess }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  return useContext(AuthContext);
+}
