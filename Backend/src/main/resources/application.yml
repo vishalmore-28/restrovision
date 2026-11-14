@@ -9,6 +9,11 @@ spring:
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
   jpa:
     hibernate:
       ddl-auto: update
@@ -23,6 +28,18 @@ spring:
       path: /h2-console
       settings:
         web-allow-others: false
+
+# Spring Boot Actuator Configuration for Production Health & Readiness Probes
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
 
 # RESTROVISION Platform Configuration
 restrovision:

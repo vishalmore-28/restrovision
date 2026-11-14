@@ -1,4 +1,5 @@
 import { Client } from '@stomp/stompjs';
+import { getAuthToken } from './api';
 
 class WebSocketService {
   constructor() {
@@ -20,6 +21,14 @@ class WebSocketService {
       heartbeatIncoming: 4000,
       heartbeatOutgoing: 4000,
       debug: () => {}, // silent
+      beforeConnect: () => {
+        const token = getAuthToken();
+        if (token) {
+          this.client.connectHeaders = {
+            Authorization: `Bearer ${token}`
+          };
+        }
+      }
     });
 
     this.client.onConnect = () => {

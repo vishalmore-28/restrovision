@@ -16,6 +16,8 @@ import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
@@ -55,7 +57,11 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(new ChannelInterceptor() {
+        registration.interceptors(createSecurityInterceptor());
+    }
+
+    public ChannelInterceptor createSecurityInterceptor() {
+        return new ChannelInterceptor() {
             @Override
             public Message<?> preSend(Message<?> message, MessageChannel channel) {
                 StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
@@ -63,47 +69,81 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
                 if (StompCommand.CONNECT.equals(accessor.getCommand())) {
                     String authHeader = accessor.getFirstNativeHeader("Authorization");
-                    if (authHeader != null && authHeader.startsWith("Bearer ")) {
-                        String token = authHeader.substring(7);
-                        if (tokenProvider.validateToken(token)) {
-                            Claims claims = tokenProvider.getClaims(token);
-                            Number restIdNum = (Number) claims.get("restaurantId");
-                            Long restaurantId = restIdNum != null ? restIdNum.longValue() : 1L;
-
-                            @SuppressWarnings("unchecked")
-                            List<String> roles = (List<String>) claims.get("roles");
-                            List<SimpleGrantedAuthority> authorities = roles == null ? Collections.emptyList() :
-                                    roles.stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).collect(Collectors.toList());
-
-                            UsernamePasswordAuthenticationToken auth =
-                                    new UsernamePasswordAuthenticationToken(claims.getSubject(), null, authorities);
-                            accessor.setUser(auth);
-                            accessor.getSessionAttributes().put("restaurantId", restaurantId);
-                            log.info("WebSocket STOMP connected for {} (Restaurant ID: {})", claims.getSubject(), restaurantId);
-                        }
+                    if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+                        log.warn("STOMP CONNECT rejected: Missing or invalid Authorization header");
+                        throw new AuthenticationCredentialsNotFoundException("STOMP connection rejected: Missing or invalid Authorization header");
                     }
-                } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-                    String destination = accessor.getDestination();
-                    Long clientRestId = accessor.getSessionAttributes() != null
-                            ? (Long) accessor.getSessionAttributes().get("restaurantId") : null;
 
-                    // P0 Multi-Tenancy Fix: Restrict cross-tenant topic snooping!
-                    if (destination != null && destination.startsWith("/topic/restaurants/")) {
+                    String token = authHeader.substring(7).trim();
+                    if (!tokenProvider.validateToken(token)) {
+                        log.warn("STOMP CONNECT rejected: Token validation failed or token expired");
+                        throw new BadCredentialsException("STOMP connection rejected: Token validation failed or token expired");
+                    }
+
+                    Claims claims = tokenProvider.getClaims(token);
+                    if ("REFRESH".equals(claims.get("type"))) {
+                        log.warn("STOMP CONNECT rejected: Refresh token attempted for WebSocket authentication");
+                        throw new BadCredentialsException("STOMP connection rejected: Refresh token cannot be used for WebSocket session");
+                    }
+
+                    Number restIdNum = (Number) claims.get("restaurantId");
+                    if (restIdNum == null) {
+                        log.warn("STOMP CONNECT rejected: Token missing restaurantId claim");
+                        throw new AuthenticationCredentialsNotFoundException("STOMP connection rejected: Token missing restaurantId claim");
+                    }
+                    Long restaurantId = restIdNum.longValue();
+
+                    @SuppressWarnings("unchecked")
+                    List<String> roles = (List<String>) claims.get("roles");
+                    List<SimpleGrantedAuthority> authorities = roles == null ? Collections.emptyList() :
+                            roles.stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r)).collect(Collectors.toList());
+
+                    UsernamePasswordAuthenticationToken auth =
+                            new UsernamePasswordAuthenticationToken(claims.getSubject(), null, authorities);
+                    accessor.setUser(auth);
+                    if (accessor.getSessionAttributes() != null) {
+                        accessor.getSessionAttributes().put("restaurantId", restaurantId);
+                        accessor.getSessionAttributes().put("userEmail", claims.getSubject());
+                    }
+                    log.info("WebSocket STOMP authenticated for {} (Restaurant ID: {})", claims.getSubject(), restaurantId);
+
+                } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
+                    if (accessor.getUser() == null || accessor.getSessionAttributes() == null || accessor.getSessionAttributes().get("restaurantId") == null) {
+                        log.warn("Blocked unauthenticated WebSocket subscription attempt to {}", accessor.getDestination());
+                        throw new AccessDeniedException("Access denied: Unauthenticated subscription attempt.");
+                    }
+
+                    String destination = accessor.getDestination();
+                    if (destination == null) {
+                        throw new AccessDeniedException("Access denied: Subscription destination cannot be null.");
+                    }
+
+                    Long clientRestId = (Long) accessor.getSessionAttributes().get("restaurantId");
+                    if (destination.startsWith("/topic/restaurants/")) {
                         String[] parts = destination.split("/");
                         if (parts.length >= 4) {
                             try {
                                 Long targetRestId = Long.parseLong(parts[3]);
-                                if (clientRestId != null && !clientRestId.equals(targetRestId)) {
+                                if (!clientRestId.equals(targetRestId)) {
                                     log.warn("Blocked cross-tenant WebSocket subscription: client tenant {} attempted to subscribe to {}",
                                             clientRestId, destination);
-                                    throw new AccessDeniedException("Access denied: Cannot subscribe to topics of another restaurant.");
+                                    throw new AccessDeniedException("Access denied: Cross-tenant subscription to restaurant " + targetRestId + " is prohibited.");
                                 }
-                            } catch (NumberFormatException ignored) {}
+                            } catch (NumberFormatException ex) {
+                                throw new AccessDeniedException("Access denied: Malformed restaurant topic destination.");
+                            }
                         }
                     }
+
+                } else if (StompCommand.SEND.equals(accessor.getCommand())) {
+                    if (accessor.getUser() == null || accessor.getSessionAttributes() == null || accessor.getSessionAttributes().get("restaurantId") == null) {
+                        log.warn("Blocked unauthenticated WebSocket SEND attempt to {}", accessor.getDestination());
+                        throw new AccessDeniedException("Access denied: Unauthenticated message dispatch.");
+                    }
                 }
+
                 return message;
             }
-        });
+        };
     }
 }

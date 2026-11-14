@@ -7,6 +7,11 @@ spring:
     driver-class-name: oracle.jdbc.OracleDriver
     username: ${ORACLE_USERNAME:restrovision}
     password: ${ORACLE_PASSWORD:restrovision123}
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
   jpa:
     hibernate:
       ddl-auto: validate
