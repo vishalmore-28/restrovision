@@ -86,18 +86,18 @@ EXIT;
 ```
 
 ### 2.3 Post-Migration Object Grants Script
-After Flyway executes migrations `V1` and `V2` under `restrovision_migrator`, the DBA or migration pipeline executes the following script to grant DML permissions to `restrovision_app`:
+After Flyway executes migrations `V1` and `V2` under `restrovision_migrator`, the DBA or migration pipeline executes the following script to grant DML permissions to `restrovision_app`. Note that Flyway metadata table `flyway_schema_history` is explicitly **excluded** from application grants and synonyms:
 
 ```sql
 -- Execute in FREEPDB1 to wire DML permissions and synonyms:
 BEGIN
-  -- Grant DML on all tables
-  FOR t IN (SELECT table_name FROM dba_tables WHERE owner = 'RESTROVISION_MIGRATOR') LOOP
+  -- 1. Grant DML on application tables (Excluding Flyway migration metadata)
+  FOR t IN (SELECT table_name FROM dba_tables WHERE owner = 'RESTROVISION_MIGRATOR' AND UPPER(table_name) NOT IN ('FLYWAY_SCHEMA_HISTORY')) LOOP
     EXECUTE IMMEDIATE 'GRANT SELECT, INSERT, UPDATE, DELETE ON restrovision_migrator.' || t.table_name || ' TO restrovision_app_role';
   END LOOP;
   
-  -- Grant sequence usage
-  FOR s IN (SELECT sequence_name FROM dba_sequences WHERE sequence_owner = 'RESTROVISION_MIGRATOR') LOOP
+  -- 2. Grant sequence usage on explicit sequences (Excluding internal system identity sequences)
+  FOR s IN (SELECT sequence_name FROM dba_sequences WHERE sequence_owner = 'RESTROVISION_MIGRATOR' AND sequence_name NOT LIKE 'ISEQ$$%') LOOP
     EXECUTE IMMEDIATE 'GRANT SELECT ON restrovision_migrator.' || s.sequence_name || ' TO restrovision_app_role';
   END LOOP;
 END;
@@ -105,16 +105,31 @@ END;
 
 GRANT restrovision_app_role TO restrovision_app;
 
--- Create synonyms in restrovision_app for clean object resolution:
+-- 3. Create private synonyms in restrovision_app for clean object resolution:
 BEGIN
-  FOR t IN (SELECT table_name FROM dba_tables WHERE owner = 'RESTROVISION_MIGRATOR') LOOP
+  FOR t IN (SELECT table_name FROM dba_tables WHERE owner = 'RESTROVISION_MIGRATOR' AND UPPER(table_name) NOT IN ('FLYWAY_SCHEMA_HISTORY')) LOOP
     EXECUTE IMMEDIATE 'CREATE OR REPLACE SYNONYM restrovision_app.' || t.table_name || ' FOR restrovision_migrator.' || t.table_name;
   END LOOP;
 END;
 /
 ```
 
-### 2.4 Listener Network Access Control (`sqlnet.ora`)
+### 2.4 Quota Monitoring & Capacity Planning
+The 10 GB finite quota on `users` tablespace must be monitored periodically by the database administrator:
+
+```sql
+-- Capacity & Quota Monitoring Query (Execute as SYSDBA or SYSTEM)
+SELECT tablespace_name, 
+       ROUND(bytes / (1024*1024), 2) AS used_mb, 
+       ROUND(max_bytes / (1024*1024), 2) AS max_mb,
+       ROUND((bytes / max_bytes) * 100, 2) AS pct_used
+FROM dba_ts_quotas 
+WHERE username = 'RESTROVISION_MIGRATOR';
+```
+- **Alerting Threshold:** Trigger an operational alert when `pct_used` exceeds **80%** ($\approx 8$ GB).
+- **Remediation:** Review partitioning / archiving policies for older `audit_logs` and `ai_events`, or increase quota (`ALTER USER restrovision_migrator QUOTA 20G ON users;`).
+
+### 2.5 Listener Network Access Control (`sqlnet.ora`)
 Restrict database listener connections to authorized application servers only by configuring `$ORACLE_HOME/network/admin/sqlnet.ora`:
 ```ini
 tcp.validnode_checking = yes
@@ -211,7 +226,7 @@ docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/restrovision/restrovi
 ```
 
 ### 4.2 Production Docker Compose Configuration (`docker-compose.prod.yml`)
-The production deployment uses `docker-compose.prod.yml`, pulling pre-built images with private internal networking:
+The production deployment uses `docker-compose.prod.yml`, requiring pre-built digest-pinned images with private internal networking:
 
 ```yaml
 # ==============================================================================
@@ -220,24 +235,24 @@ The production deployment uses `docker-compose.prod.yml`, pulling pre-built imag
 # ==============================================================================
 services:
   backend:
-    image: ${BACKEND_IMAGE:-ghcr.io/restrovision/restrovision-backend:2.0.0}
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-backend@sha256:...)}"
     container_name: restrovision-backend
     restart: always
     expose:
       - "8080" # Internal container network only; NOT exposed on host
     environment:
       - SPRING_PROFILES_ACTIVE=oracle
-      - ORACLE_HOST=${ORACLE_HOST}
+      - ORACLE_HOST=${ORACLE_HOST:-oracle-db}
       - ORACLE_PORT=${ORACLE_PORT:-1521}
       - ORACLE_SERVICE=${ORACLE_SERVICE:-freepdb1}
-      - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME}
-      - ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD}
-      - ORACLE_MIGRATION_USERNAME=${ORACLE_MIGRATION_USERNAME}
-      - ORACLE_MIGRATION_PASSWORD=${ORACLE_MIGRATION_PASSWORD}
-      - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET}
-      - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET}
+      - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME:?ORACLE_APP_USERNAME is required}
+      - ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD:?ORACLE_APP_PASSWORD is required}
+      - ORACLE_MIGRATION_USERNAME=${ORACLE_MIGRATION_USERNAME:?ORACLE_MIGRATION_USERNAME is required}
+      - ORACLE_MIGRATION_PASSWORD=${ORACLE_MIGRATION_PASSWORD:?ORACLE_MIGRATION_PASSWORD is required}
+      - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET:?RESTROVISION_JWT_SECRET is required}
+      - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
       - RESTROVISION_COOKIE_SECURE=true
-      - RESTROVISION_TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - RESTROVISION_TRUSTED_PROXIES=${RESTROVISION_TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     networks:
       - restrovision-network
     healthcheck:
@@ -248,7 +263,7 @@ services:
       start_period: 30s
 
   frontend:
-    image: ${FRONTEND_IMAGE:-ghcr.io/restrovision/restrovision-frontend:2.0.0}
+    image: "${FRONTEND_IMAGE:?FRONTEND_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-frontend@sha256:...)}"
     container_name: restrovision-frontend
     restart: always
     ports:
@@ -269,17 +284,17 @@ services:
       start_period: 5s
 
   edge-ai:
-    image: ${EDGE_AI_IMAGE:-ghcr.io/restrovision/restrovision-edge-ai:2.0.0}
+    image: "${EDGE_AI_IMAGE:?EDGE_AI_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-edge-ai@sha256:...)}"
     container_name: restrovision-edge-ai
     restart: always
     expose:
       - "8000" # Internal container network only; NOT exposed on host
     environment:
-      - SPRING_BOOT_URL=http://backend:8080
+      - SPRING_BOOT_URL=${SPRING_BOOT_URL:-http://backend:8080}
       - EDGE_NODE_ID=${EDGE_NODE_ID:-edge-pune-01}
       - RESTAURANT_ID=${RESTAURANT_ID:-1}
-      - SERVICE_TOKEN=${SERVICE_TOKEN}
-      - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET}
+      - SERVICE_TOKEN=${SERVICE_TOKEN:-}
+      - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
     depends_on:
       backend:
         condition: service_healthy
@@ -309,7 +324,7 @@ docker compose -f docker-compose.prod.yml up -d backend
 
 ## 5. Network Hardening, TLS Termination & HSTS Governance
 
-### 5.1 Port Exposure Architecture
+### 5.1 Port Exposure & Network Isolation Architecture
 - **Publicly Exposed Ports:**
   - `443/tcp`: TLS HTTPS traffic and secure WebSockets (`wss://`).
   - `80/tcp`: Plaintext HTTP (Enforces immediate 301 redirect to HTTPS).
@@ -318,7 +333,14 @@ docker compose -f docker-compose.prod.yml up -d backend
   - `8000/tcp` (Edge AI): Accessible only from the local camera network and backend proxy.
   - `1521/tcp` (Oracle): Accessible only from backend hosts.
 
-### 5.2 TLS Reverse Proxy & Forwarded Header Configuration
+### 5.2 Camera-to-Edge Connectivity Path
+In accordance with `CAMERA_DEPLOYMENT_GUIDE.md`:
+1. **Physical IP Cameras:** Stream H.264 video over RTSP (`rtsp://<camera-ip>:554/stream1`) via dedicated, isolated local restaurant CCTV VLAN directly to the on-premise Edge AI host.
+2. **On-Premise Edge Processing:** Video frames are ingested into memory-only RAM ring buffers by OpenCV. **Zero video frames are ever written to disk or streamed over public internet.**
+3. **Signed Micro-Event Transmission:** When a table occupancy or staff service event is detected and confirmed by the temporal sliding-window engine, a compact JSON payload ($< 1$ KB) is signed with HMAC-SHA256 and dispatched to the Spring Boot backend (`POST /api/v1/ai/events`).
+4. **Network Routing:** In containerized deployments, edge-ai communicates with backend via the private Docker bridge network (`http://backend:8080`). For remote restaurant edge appliances, communication transits external TLS ingress (`https://app.restrovision.com/api/v1/ai/events`) with mandatory per-device cryptographic JWTs.
+
+### 5.3 TLS Reverse Proxy & Forwarded Header Configuration
 Nginx configuration handles TLS termination and forwards client context to Spring Boot:
 
 ```nginx
@@ -443,6 +465,16 @@ $env:ORACLE_MIGRATION_USERNAME = "restrovision_migrator"
 # 2. Deploy using production compose
 docker compose -f docker-compose.prod.yml up -d
 ```
+
+### 6.3 Process Memory Security Limitations & Production Secret Managers
+> [!WARNING]
+> **Process Environment Security Reality:**
+> - Interactive console masking (such as `read -s` or `Read-Host -AsSecureString`) only prevents shoulder-surfing and terminal command history logging.
+> - As soon as a `SecureString` is converted via `PtrToStringAuto` into a process environment variable (`$env:`), the secret resides as a plaintext string in process memory, in the Process Environment Block (PEB), and in the process environment of spawned child processes (`/proc/<pid>/environ` on Linux or via Process Explorer on Windows).
+> - **Enterprise Production Recommendation:** Do not rely on shell environment variables for long-lived production secrets. Enterprise deployments should use a dedicated secret management system:
+>   1. **HashiCorp Vault / OCI Vault:** Inject secrets directly into container processes or using Vault Agent sidecars.
+>   2. **Cloud Secret Managers:** AWS Secrets Manager, Azure Key Vault, or GCP Secret Manager integrated with container orchestrators.
+>   3. **Docker Secrets / Kubernetes Secrets:** Secrets mounted as in-memory tmpfs files (`/run/secrets/...`) rather than environment variables, ensuring secrets never appear in process listings or container inspection metadata.
 
 ---
 

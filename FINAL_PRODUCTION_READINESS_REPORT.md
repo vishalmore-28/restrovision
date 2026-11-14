@@ -81,7 +81,7 @@ The application is designated **NOT PRODUCTION READY** for live deployment cutov
 3. **Oracle 26ai Free Alignment:** Reconfigured `application-oracle.yml` to default to `${ORACLE_SERVICE:freepdb1}`. *(Commit `82235f4`)*.
 4. **Original BUG-022 (Real CI/CD):** Created `.github/workflows/ci.yml` covering Java 21 Maven build/test, Node 22 Vitest/build, Python 3.11 Pytest, security audits, and Compose validation. *(Commit `82235f4`)*.
 5. **Insecure Password & Fallback Elimination:** Hardened `application-oracle.yml` to fail fast on startup if database credentials or encryption keys are missing, eliminating `restrovision123`. *(Commit `a4b61d3`)*.
-6. **Dual-Account Oracle Model:** Configured separate Flyway migration credentials (`ORACLE_MIGRATION_USERNAME`) and runtime credentials (`ORACLE_APP_USERNAME`) with schema targeting (`ORACLE_SCHEMA:RESTROVISION`).
+6. **Dual-Account Oracle Model:** Configured separate Flyway migration credentials (`ORACLE_MIGRATION_USERNAME`) and runtime credentials (`ORACLE_APP_USERNAME`) without fallback, targeting migration schema (`ORACLE_SCHEMA:RESTROVISION_MIGRATOR`) and isolating Flyway metadata from the runtime account.
 7. **Production Docker Compose (`docker-compose.prod.yml`):** Created dedicated production compose using immutable image tags/digests, private internal bridge network (`restrovision-network`), exposing only public ports 80/443 on Nginx while keeping backend (8080) and edge-ai (8000) private.
 8. **Documentation & Runbook Hardening:** Authored enterprise deployment runbook (`FINAL_DEPLOYMENT_CHECKLIST.md`) documenting DBA scripts, 10 GB quota justification, Data Pump vs RMAN PITR, HSTS subdomain caution, and non-echo secret injection scripts.
 

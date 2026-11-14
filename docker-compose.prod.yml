@@ -1,6 +1,6 @@
 services:
   backend:
-    image: ${BACKEND_IMAGE:-ghcr.io/restrovision/restrovision-backend:2.0.0}
+    image: "${BACKEND_IMAGE:?BACKEND_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-backend@sha256:...)}"
     container_name: restrovision-backend
     restart: always
     expose:
@@ -10,14 +10,14 @@ services:
       - ORACLE_HOST=${ORACLE_HOST:-oracle-db}
       - ORACLE_PORT=${ORACLE_PORT:-1521}
       - ORACLE_SERVICE=${ORACLE_SERVICE:-freepdb1}
-      - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME:-restrovision_app}
-      - ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD}
-      - ORACLE_MIGRATION_USERNAME=${ORACLE_MIGRATION_USERNAME:-restrovision_migrator}
-      - ORACLE_MIGRATION_PASSWORD=${ORACLE_MIGRATION_PASSWORD}
-      - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET}
-      - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET}
+      - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME:?ORACLE_APP_USERNAME is required}
+      - ORACLE_APP_PASSWORD=${ORACLE_APP_PASSWORD:?ORACLE_APP_PASSWORD is required}
+      - ORACLE_MIGRATION_USERNAME=${ORACLE_MIGRATION_USERNAME:?ORACLE_MIGRATION_USERNAME is required}
+      - ORACLE_MIGRATION_PASSWORD=${ORACLE_MIGRATION_PASSWORD:?ORACLE_MIGRATION_PASSWORD is required}
+      - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET:?RESTROVISION_JWT_SECRET is required}
+      - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
       - RESTROVISION_COOKIE_SECURE=true
-      - RESTROVISION_TRUSTED_PROXIES=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - RESTROVISION_TRUSTED_PROXIES=${RESTROVISION_TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     networks:
       - restrovision-network
     healthcheck:
@@ -28,7 +28,7 @@ services:
       start_period: 30s
 
   frontend:
-    image: ${FRONTEND_IMAGE:-ghcr.io/restrovision/restrovision-frontend:2.0.0}
+    image: "${FRONTEND_IMAGE:?FRONTEND_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-frontend@sha256:...)}"
     container_name: restrovision-frontend
     restart: always
     ports:
@@ -47,17 +47,17 @@ services:
       start_period: 5s
 
   edge-ai:
-    image: ${EDGE_AI_IMAGE:-ghcr.io/restrovision/restrovision-edge-ai:2.0.0}
+    image: "${EDGE_AI_IMAGE:?EDGE_AI_IMAGE digest-pinned image required (e.g. ghcr.io/restrovision/restrovision-edge-ai@sha256:...)}"
     container_name: restrovision-edge-ai
     restart: always
     expose:
       - "8000"
     environment:
-      - SPRING_BOOT_URL=http://backend:8080
+      - SPRING_BOOT_URL=${SPRING_BOOT_URL:-http://backend:8080}
       - EDGE_NODE_ID=${EDGE_NODE_ID:-edge-pune-01}
       - RESTAURANT_ID=${RESTAURANT_ID:-1}
       - SERVICE_TOKEN=${SERVICE_TOKEN:-}
-      - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET}
+      - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
     depends_on:
       backend:
         condition: service_healthy

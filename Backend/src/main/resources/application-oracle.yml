@@ -5,16 +5,17 @@ spring:
   datasource:
     url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:freepdb1}
     driver-class-name: oracle.jdbc.OracleDriver
-    username: ${ORACLE_APP_USERNAME:${ORACLE_USERNAME}}
-    password: ${ORACLE_APP_PASSWORD:${ORACLE_PASSWORD}}
+    username: ${ORACLE_APP_USERNAME}
+    password: ${ORACLE_APP_PASSWORD}
   flyway:
     enabled: true
     baseline-on-migrate: true
     baseline-version: 1
     locations: classpath:db/migration
-    user: ${ORACLE_MIGRATION_USERNAME:${ORACLE_APP_USERNAME:${ORACLE_USERNAME}}}
-    password: ${ORACLE_MIGRATION_PASSWORD:${ORACLE_APP_PASSWORD:${ORACLE_PASSWORD}}}
-    schemas: ${ORACLE_SCHEMA:RESTROVISION}
+    user: ${ORACLE_MIGRATION_USERNAME}
+    password: ${ORACLE_MIGRATION_PASSWORD}
+    schemas: ${ORACLE_SCHEMA:RESTROVISION_MIGRATOR}
+    default-schema: ${ORACLE_SCHEMA:RESTROVISION_MIGRATOR}
   jpa:
     open-in-view: false
     hibernate:
@@ -28,7 +29,7 @@ restrovision:
   jwt:
     secret: ${RESTROVISION_JWT_SECRET}
   edge:
-    hmac-secret: ${RESTROVISION_HMAC_SECRET}
+    hmac-secret: ${RESTROVISION_EDGE_HMAC_SECRET:${RESTROVISION_HMAC_SECRET}}
   security:
     cookie:
       secure: ${RESTROVISION_COOKIE_SECURE:true}
