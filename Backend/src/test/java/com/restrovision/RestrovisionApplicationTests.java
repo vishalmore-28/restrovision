@@ -42,6 +42,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -625,6 +626,141 @@ class RestrovisionApplicationTests {
                 .filter(e -> eventId.equals(e.getEventUid()) && Long.valueOf(1L).equals(e.getRestaurantId()))
                 .count();
         assertThat(count).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("07j: Concurrent cache capacity - verifies soft-bounding and records peak observed size (BUG-005 Check 1)")
+    void testConcurrentCacheCapacityAndSoftBounding() throws Exception {
+        aiEventIngestionService.clearRecentEventCache();
+        assertThat(aiEventIngestionService.getRecentEventCacheSize()).isEqualTo(0);
+
+        int totalKeys = 5500;
+        int threadCount = 20;
+        int keysPerThread = totalKeys / threadCount;
+        AtomicInteger peakObservedSize = new AtomicInteger(0);
+
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<>();
+
+        for (int t = 0; t < threadCount; t++) {
+            final int threadIndex = t;
+            futures.add(executor.submit(() -> {
+                startLatch.await();
+                Instant now = Instant.now();
+                for (int k = 0; k < keysPerThread; k++) {
+                    String cacheKey = "1:event-thread-" + threadIndex + "-key-" + k;
+                    aiEventIngestionService.putInCache(cacheKey, now);
+                    int currentSize = aiEventIngestionService.getRecentEventCacheSize();
+                    peakObservedSize.accumulateAndGet(currentSize, Math::max);
+                }
+                return null;
+            }));
+        }
+
+        startLatch.countDown();
+        executor.shutdown();
+        boolean completed = executor.awaitTermination(30, TimeUnit.SECONDS);
+        assertThat(completed).isTrue();
+
+        int finalSize = aiEventIngestionService.getRecentEventCacheSize();
+        int maxObserved = peakObservedSize.get();
+
+        System.out.println("==================================================================");
+        System.out.println("  CONCURRENT CACHE CAPACITY BENCHMARK EVIDENCE");
+        System.out.println("  Total Keys Inserted: " + (threadCount * keysPerThread));
+        System.out.println("  Concurrent Threads:  " + threadCount);
+        System.out.println("  Peak Observed Size:  " + maxObserved);
+        System.out.println("  Final Settled Size:  " + finalSize);
+        System.out.println("==================================================================");
+
+        assertThat(maxObserved).isGreaterThanOrEqualTo(5000);
+        assertThat(finalSize).isLessThanOrEqualTo(5000);
+
+        aiEventIngestionService.clearRecentEventCache();
+    }
+
+    @Test
+    @DisplayName("07k: Transaction failure-path consistency, FAILED status persistence, and retry recovery (BUG-005 Check 2)")
+    void testTransactionFailurePathConsistencyAndRetryRecovery() throws Exception {
+        aiEventIngestionService.clearRecentEventCache();
+        String edgeToken = getValidEdgeToken();
+        String failedEventId = UUID.randomUUID().toString();
+
+        // 1. Failure Scenario 1: Event persistence succeeds, but state processing fails
+        // Target an invalid tableId = 999999L which throws IllegalArgumentException("Table not found: 999999")
+        Map<String, Object> failedPayload = new HashMap<>();
+        failedPayload.put("eventId", failedEventId);
+        failedPayload.put("schemaVersion", "1.0");
+        failedPayload.put("edgeNodeId", "edge-pune-01");
+        failedPayload.put("restaurantId", 1);
+        failedPayload.put("tableId", 999999L);
+        failedPayload.put("eventType", "TABLE_OCCUPIED");
+        failedPayload.put("confidence", 0.95);
+        failedPayload.put("occurredAt", Instant.now().toString());
+        failedPayload.put("detectedAt", Instant.now().toString());
+
+        byte[] failedBytes = objectMapper.writeValueAsBytes(failedPayload);
+        String failedSignature = calculateHmac(failedBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", failedSignature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(failedBytes))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.title").value("Bad Request"));
+
+        // Database assertions for Failure Scenario 1:
+        // A. ai_events record exists with status strictly "FAILED"
+        Optional<AiEvent> recordedFailedEvent = aiEventRepository.findByRestaurantIdAndEventUid(1L, failedEventId);
+        assertThat(recordedFailedEvent).isPresent();
+        assertThat(recordedFailedEvent.get().getProcessingStatus()).isEqualTo("FAILED");
+
+        // B. In-memory cache was evicted on failure to ensure future retries are not suppressed
+        assertThat(aiEventIngestionService.isEventInCache(1L, failedEventId)).isFalse();
+
+        // 2. Failure Scenario 3: A retry occurs after the partial failure with a valid table
+        failedPayload.put("tableId", 2L);
+        byte[] retryBytes = objectMapper.writeValueAsBytes(failedPayload);
+        String retrySignature = calculateHmac(retryBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", retrySignature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(retryBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.eventId").value(failedEventId));
+
+        // Database assertions for Successful Retry:
+        // A. Exactly 1 row in ai_events for this eventUid (reused entity, uq_ai_event preserved)
+        List<AiEvent> eventsInDb = aiEventRepository.findAll().stream()
+                .filter(e -> failedEventId.equals(e.getEventUid()) && Long.valueOf(1L).equals(e.getRestaurantId()))
+                .toList();
+        assertThat(eventsInDb).hasSize(1);
+        // B. Status transitioned from "FAILED" to "APPLIED"
+        assertThat(eventsInDb.get(0).getProcessingStatus()).isEqualTo("APPLIED");
+        // C. Table 2 state transitioned to OCCUPIED with an ACTIVE session
+        RestaurantTable table2 = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+        assertThat(table2.getStatus()).isEqualTo("OCCUPIED");
+        assertThat(table2.getCurrentSessionId()).isNotNull();
+
+        // 3. Failure Scenario 4: The same event UUID is submitted AGAIN after successful recovery
+        Long activeSessionId = table2.getCurrentSessionId();
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", retrySignature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(retryBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DUPLICATE_IGNORED"));
+
+        // Verify table session and state are identical (no duplicate session created)
+        RestaurantTable table2After = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+        assertThat(table2After.getStatus()).isEqualTo("OCCUPIED");
+        assertThat(table2After.getCurrentSessionId()).isEqualTo(activeSessionId);
     }
 
     @Test

@@ -14,12 +14,12 @@ Following implementation of Remediation Group 2, all test suites were executed a
 
 | Test Suite / Scope | Target Area | Tests Executed | Passed | Failed | Errors | Duration |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Backend Core Integration** (`RestrovisionApplicationTests`) | Core REST APIs, AI Ingestion Freshness, Security, QR, Auth, Concurrency & Replay | 36 | 36 | 0 | 0 | 25.75s |
-| **WebSocket Live STOMP Suite** (`WebSocketIntegrationProductionTest`) | Live STOMP TCP sockets, JWT handshake, multi-tenant isolation, allowlist, traversal | 11 | 11 | 0 | 0 | 11.23s |
+| **Backend Core Integration** (`RestrovisionApplicationTests`) | Core REST APIs, AI Ingestion Freshness, Security, QR, Auth, Concurrency, Cache Bounding, Failure Recovery | 38 | 38 | 0 | 0 | 26.50s |
+| **WebSocket Live STOMP Suite** (`WebSocketIntegrationProductionTest`) | Live STOMP TCP sockets, JWT handshake, multi-tenant isolation, allowlist, traversal | 11 | 11 | 0 | 0 | 11.20s |
 | **Edge Security Suite** (`EdgeSecurityProductionVerificationTest`) | Per-device token validation, revocation, expiry, cross-tenant binding | 7 | 7 | 0 | 0 | 5.48s |
 | **Tenant Context Safety Suite** (`TenantContextSafetyTest`) | ThreadLocal isolation, thread pool recycling, null safety, multi-tenant isolation | 5 | 5 | 0 | 0 | 0.23s |
 | **Group 2 Performance & Regressions** (`Group2PerformanceAndRegressionTest`) | N+1 query elimination, p50/p95/p99 latency benchmarks, Order lazy loading, JSON serialization | 4 | 4 | 0 | 0 | 18.80s |
-| **Total Backend Test Suite (`mvn clean test`)** | **Complete Spring Boot Backend Regression** | **63** | **63** | **0** | **0** | **52.37s** |
+| **Total Backend Test Suite (`mvn clean test`)** | **Complete Spring Boot Backend Regression** | **65** | **65** | **0** | **0** | **48.54s** |
 | **Frontend Production Compilation (`npm run build`)** | Vite production build, bundle verification, asset integrity | 1,610 modules | Built | 0 | 0 | 4.47s |
 | **Python Edge AI State Engine (`run_tests.py`)** | Temporal state engine, walk-by rejection, flicker tolerance, vacancy hold, HMAC, live Spring Boot | 5 | 5 | 0 | 0 | 1.82s |
 
@@ -69,6 +69,8 @@ In accordance with strict production hardening requirements, a focused supplemen
 | `testSignedEventReplayAndTamperedUuid` | Payload tampering, signature mismatch, stale replay, delayed retry | • Identical replay returns `DUPLICATE_IGNORED`<br>• Tampered UUID with reused HMAC signature returns HTTP 401 (`Invalid Signature`) and is rejected before DB access<br>• Tampered event not in DB<br>• Stale event (10 days) with fresh HMAC returns `REJECTED_STALE`<br>• Delayed outbox retry (25 mins) returns `ACCEPTED` | **PASS** |
 | `testSignatureValidationPrecedesEventProcessingAndStateRemainsUnchanged` | Confirm HMAC verification strictly precedes state change or storage | • Missing signature header returns HTTP 401 (`Missing Signature`)<br>• Invalid HMAC returns HTTP 401 (`Invalid Signature`)<br>• Table status remains `AVAILABLE`<br>• Alert count unchanged<br>• 0 rows added to `ai_events` | **PASS** |
 | `testCacheExpiryAndAuthoritativeDbConstraint` | Verify cache eviction maintains DB as authoritative single source of truth | • Initial ingestion accepted, populates cache<br>• In-memory cache cleared via `clearRecentEventCache()` (simulating eviction / restart)<br>• Re-submission queries DB (`aiEventRepository.findByRestaurantIdAndEventUid`)<br>• Returns `DUPLICATE_IGNORED`, re-populates cache<br>• Strictly 1 row in DB (no second source of truth) | **PASS** |
+| `testConcurrentCacheCapacityAndSoftBounding` | Check 1: 20 concurrent threads inserting 5,500 distinct event keys | • Total keys: 5,500 across 20 parallel worker threads<br>• Peak observed concurrent size: **5,002** (transient burst)<br>• Final settled cache size: **5,000** ($\le 5,000$ bound enforced)<br>• Verified non-blocking, lock-free soft bounding | **PASS** |
+| `testTransactionFailurePathConsistencyAndRetryRecovery` | Check 2: Failure-path lifecycle, FAILED status, cache eviction, and idempotent retry recovery | • State failure triggers `catch (Exception ex)`: updates `ai_events.processing_status` to `"FAILED"`<br>• In-memory cache evicts key (`isEventInCache == false`)<br>• Retry with valid table detects previous `"FAILED"` status, reuses entity, applies state (`OCCUPIED`), session (`ACTIVE`), and updates to `"APPLIED"`<br>• Subsequent submission returns `DUPLICATE_IGNORED` with 0 duplicate transitions | **PASS** |
 
 ```text
 // Actual Spring Boot log output during concurrent execution:

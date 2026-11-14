@@ -123,7 +123,9 @@
   - `testSignedEventReplayAndTamperedUuid`: Direct replay returns `DUPLICATE_IGNORED`; modifying UUID with reused signature fails HMAC check with 401 `Invalid Signature`; stale event (10 days) rejected with `REJECTED_STALE`; delayed retry (25m) returns `ACCEPTED`.
   - `testSignatureValidationPrecedesEventProcessingAndStateRemainsUnchanged`: Invalid or missing signature returns 401; floor table status, alerts, and DB storage remain untouched.
   - `testCacheExpiryAndAuthoritativeDbConstraint`: Clearing in-memory cache to simulate restart/eviction correctly relies on DB unique record/constraint as authoritative single source of truth.
-  - Suite: `RestrovisionApplicationTests` (36/36 passed).
+  - `testConcurrentCacheCapacityAndSoftBounding`: Verified soft-bounding behavior under 20 concurrent threads inserting 5,500 keys (peak observed size: 5,002, settling to 5,000).
+  - `testTransactionFailurePathConsistencyAndRetryRecovery`: Verified failure-path lifecycle: business failure records status `"FAILED"` in DB, evicts key from cache, retry with valid parameters recovers cleanly and transitions to `"APPLIED"`, subsequent identical submission returns `DUPLICATE_IGNORED` with 0 duplicate state/sessions/alerts.
+  - Suite: `RestrovisionApplicationTests` (38/38 passed). Total Backend: 65/65 passed.
 
 ### BUG-006 & BUG-017 (N+1 Query Elimination & Latency Benchmarks)
 - **Status**: **RESOLVED & VERIFIED**

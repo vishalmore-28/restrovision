@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -81,81 +82,96 @@ public class AiEventIngestionService {
 
         // 2. Persistent DB check for duplicate (authoritative source of truth, survives backend restarts)
         Optional<AiEvent> existing = aiEventRepository.findByRestaurantIdAndEventUid(restaurantId, eventId);
+        boolean isRetry = false;
+        AiEvent aiEvent;
         if (existing.isPresent()) {
-            putInCache(cacheKey, now);
-            log.info("Duplicate event ignored via DB record: {} for restaurant {}", eventId, restaurantId);
-            return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
-        }
-
-        // 3. Prepare event entity
-        Instant occurredAt = envelope.getOccurredAt() != null ? envelope.getOccurredAt() : now;
-
-        AiEvent aiEvent = new AiEvent();
-        aiEvent.setRestaurantId(restaurantId);
-        aiEvent.setEventUid(eventId);
-        aiEvent.setSchemaVersion(envelope.getSchemaVersion() != null ? envelope.getSchemaVersion() : "1.0");
-        aiEvent.setEdgeNodeId(envelope.getEdgeNodeId() != null ? envelope.getEdgeNodeId() : "edge-01");
-        aiEvent.setCameraId(envelope.getCameraId());
-        aiEvent.setZoneId(envelope.getZoneId());
-        aiEvent.setTableId(envelope.getTableId());
-        aiEvent.setEventType(envelope.getEventType());
-        aiEvent.setConfidence(envelope.getConfidence());
-        aiEvent.setOccurredAt(occurredAt);
-        aiEvent.setDetectedAt(envelope.getDetectedAt() != null ? envelope.getDetectedAt() : now);
-        aiEvent.setSnapshotRef(envelope.getSnapshotRef());
-
-        try {
-            if (envelope.getModelVersions() != null) {
-                aiEvent.setModelVersions(objectMapper.writeValueAsString(envelope.getModelVersions()));
-            }
-            if (envelope.getData() != null) {
-                aiEvent.setDataJson(objectMapper.writeValueAsString(envelope.getData()));
-            }
-        } catch (Exception ex) {
-            log.warn("Failed to serialize modelVersions or data to JSON: {}", ex.getMessage());
-        }
-
-        // 4. Timestamp Freshness & Clock Skew Validation
-        // A. Reject events far in the future (beyond clock skew tolerance)
-        if (occurredAt.isAfter(now.plusSeconds(clockSkewToleranceSeconds))) {
-            log.warn("AI Event {} rejected: occurredAt {} is in the future beyond {}s clock skew limit",
-                    eventId, occurredAt, clockSkewToleranceSeconds);
-            aiEvent.setProcessingStatus("REJECTED_CLOCK_SKEW");
-            try {
-                aiEventRepository.saveAndFlush(aiEvent);
+            AiEvent existingEvent = existing.get();
+            String status = existingEvent.getProcessingStatus();
+            if ("APPLIED".equals(status)) {
                 putInCache(cacheKey, now);
-            } catch (DataIntegrityViolationException dive) {
-                log.info("Concurrent duplicate caught for future event {}: {}", eventId, dive.getMessage());
-            }
-            return Map.of("success", true, "eventId", eventId, "status", "REJECTED_CLOCK_SKEW");
-        }
-
-        // B. Reject stale telemetry exceeding maximum retry/shift window (e.g. > 2 hours)
-        if (occurredAt.isBefore(now.minusSeconds(maxEventAgeSeconds))) {
-            log.warn("AI Event {} rejected: occurredAt {} is stale (exceeds max event age of {}s)",
-                    eventId, occurredAt, maxEventAgeSeconds);
-            aiEvent.setProcessingStatus("REJECTED_STALE");
-            try {
-                aiEventRepository.saveAndFlush(aiEvent);
+                log.info("Duplicate event ignored via DB record (APPLIED): {} for restaurant {}", eventId, restaurantId);
+                return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
+            } else if (status != null && status.startsWith("REJECTED_")) {
                 putInCache(cacheKey, now);
-            } catch (DataIntegrityViolationException dive) {
-                log.info("Concurrent duplicate caught for stale event {}: {}", eventId, dive.getMessage());
+                log.info("Duplicate event ignored via DB record ({}): {} for restaurant {}", status, eventId, restaurantId);
+                return Map.of("success", true, "eventId", eventId, "status", status);
+            } else if ("FAILED".equals(status)) {
+                log.info("Retrying previously FAILED event: {} for restaurant {}", eventId, restaurantId);
+                aiEvent = existingEvent;
+                isRetry = true;
+            } else {
+                // In-flight or uncompleted ("RECEIVED"): return DUPLICATE_IGNORED to prevent concurrent execution
+                putInCache(cacheKey, now);
+                return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
             }
-            return Map.of("success", true, "eventId", eventId, "status", "REJECTED_STALE");
-        }
+        } else {
+            aiEvent = new AiEvent();
+            aiEvent.setRestaurantId(restaurantId);
+            aiEvent.setEventUid(eventId);
+            aiEvent.setSchemaVersion(envelope.getSchemaVersion() != null ? envelope.getSchemaVersion() : "1.0");
+            aiEvent.setEdgeNodeId(envelope.getEdgeNodeId() != null ? envelope.getEdgeNodeId() : "edge-01");
+            aiEvent.setCameraId(envelope.getCameraId());
+            aiEvent.setZoneId(envelope.getZoneId());
+            aiEvent.setTableId(envelope.getTableId());
+            aiEvent.setEventType(envelope.getEventType());
+            aiEvent.setConfidence(envelope.getConfidence());
+            Instant occurredAt = envelope.getOccurredAt() != null ? envelope.getOccurredAt() : now;
+            aiEvent.setOccurredAt(occurredAt);
+            aiEvent.setDetectedAt(envelope.getDetectedAt() != null ? envelope.getDetectedAt() : now);
+            aiEvent.setSnapshotRef(envelope.getSnapshotRef());
 
-        // 5. Atomic DB insert catching concurrent unique-key collisions
-        try {
-            aiEvent = aiEventRepository.saveAndFlush(aiEvent);
-            putInCache(cacheKey, now);
-        } catch (DataIntegrityViolationException ex) {
-            putInCache(cacheKey, now);
-            log.info("Concurrent duplicate event caught via DB constraint: {} for restaurant {}", eventId, restaurantId);
-            Map<String, Object> resp = new HashMap<>();
-            resp.put("success", true);
-            resp.put("eventId", eventId);
-            resp.put("status", "DUPLICATE_IGNORED");
-            return resp;
+            try {
+                if (envelope.getModelVersions() != null) {
+                    aiEvent.setModelVersions(objectMapper.writeValueAsString(envelope.getModelVersions()));
+                }
+                if (envelope.getData() != null) {
+                    aiEvent.setDataJson(objectMapper.writeValueAsString(envelope.getData()));
+                }
+            } catch (Exception ex) {
+                log.warn("Failed to serialize modelVersions or data to JSON: {}", ex.getMessage());
+            }
+
+            // 4. Timestamp Freshness & Clock Skew Validation
+            // A. Reject events far in the future (beyond clock skew tolerance)
+            if (occurredAt.isAfter(now.plusSeconds(clockSkewToleranceSeconds))) {
+                log.warn("AI Event {} rejected: occurredAt {} is in the future beyond {}s clock skew limit",
+                        eventId, occurredAt, clockSkewToleranceSeconds);
+                aiEvent.setProcessingStatus("REJECTED_CLOCK_SKEW");
+                try {
+                    aiEventRepository.saveAndFlush(aiEvent);
+                    putInCache(cacheKey, now);
+                } catch (DataIntegrityViolationException dive) {
+                    log.info("Concurrent duplicate caught for future event {}: {}", eventId, dive.getMessage());
+                }
+                return Map.of("success", true, "eventId", eventId, "status", "REJECTED_CLOCK_SKEW");
+            }
+
+            // B. Reject stale telemetry exceeding maximum retry/shift window (e.g. > 2 hours)
+            if (occurredAt.isBefore(now.minusSeconds(maxEventAgeSeconds))) {
+                log.warn("AI Event {} rejected: occurredAt {} is stale (exceeds max event age of {}s)",
+                        eventId, occurredAt, maxEventAgeSeconds);
+                aiEvent.setProcessingStatus("REJECTED_STALE");
+                try {
+                    aiEventRepository.saveAndFlush(aiEvent);
+                    putInCache(cacheKey, now);
+                } catch (DataIntegrityViolationException dive) {
+                    log.info("Concurrent duplicate caught for stale event {}: {}", eventId, dive.getMessage());
+                }
+                return Map.of("success", true, "eventId", eventId, "status", "REJECTED_STALE");
+            }
+
+            // 5. Atomic DB insert catching concurrent unique-key collisions
+            try {
+                aiEvent = aiEventRepository.saveAndFlush(aiEvent);
+            } catch (DataIntegrityViolationException ex) {
+                putInCache(cacheKey, now);
+                log.info("Concurrent duplicate event caught via DB constraint: {} for restaurant {}", eventId, restaurantId);
+                Map<String, Object> resp = new HashMap<>();
+                resp.put("success", true);
+                resp.put("eventId", eventId);
+                resp.put("status", "DUPLICATE_IGNORED");
+                return resp;
+            }
         }
 
         final Long eventPk = aiEvent.getAiEventPk();
@@ -166,129 +182,147 @@ public class AiEventIngestionService {
             log.warn("AI Event {} rejected: confidence {} below 0.70 gate threshold", eventId, confidence);
             aiEvent.setProcessingStatus("REJECTED_BY_RULE");
             aiEventRepository.save(aiEvent);
+            putInCache(cacheKey, now);
             return Map.of("success", true, "eventId", eventId, "status", "REJECTED_BY_RULE");
         }
 
-        // 4. Apply business rules (§7.3)
+        // 7. Apply business rules with failure tracking & recovery (§7.3)
         String eventType = envelope.getEventType();
         Long tableId = envelope.getTableId();
 
-        if ("TABLE_OCCUPIED".equals(eventType) && tableId != null) {
-            Integer partySize = null;
-            if (envelope.getData() != null && envelope.getData().containsKey("estimatedPartySize")) {
-                Object pSizeObj = envelope.getData().get("estimatedPartySize");
-                if (pSizeObj instanceof Number) {
-                    partySize = ((Number) pSizeObj).intValue();
-                }
-            }
-            tableStateMachine.handleAiOccupied(restaurantId, tableId, confidence, envelope.getOccurredAt(), partySize);
-        } else if ("TABLE_VACATED".equals(eventType) && tableId != null) {
-            tableStateMachine.handleAiVacated(restaurantId, tableId, confidence, envelope.getOccurredAt());
-        } else if ("POSSIBLE_SERVICE_REQUEST".equals(eventType)) {
-            String tableCode = "Unknown";
-            Long assignedWaiterId = null;
-            if (tableId != null) {
-                RestaurantTable tbl = tableRepository.findByRestaurantIdAndTableId(restaurantId, tableId).orElse(null);
-                if (tbl != null) {
-                    tableCode = tbl.getTableCode();
-                    assignedWaiterId = tbl.getAssignedWaiterId();
-                }
-            }
-
-            // Create service request
-            ServiceRequest sr = new ServiceRequest();
-            sr.setRestaurantId(restaurantId);
-            sr.setTableId(tableId);
-            sr.setTableCode(tableCode);
-            sr.setRequestType("CALL_WAITER");
-            sr.setSource("AI_ADVISORY");
-            sr.setStatus("OPEN");
-            sr.setAssignedEmployeeId(assignedWaiterId);
-            serviceRequestRepository.save(sr);
-
-            alertService.createOrUpdateAlert(
-                    restaurantId,
-                    "SERVICE_REQUEST_GESTURE",
-                    "MEDIUM",
-                    "SR-GESTURE-" + tableId,
-                    "Customer wave / gesture detected at " + tableCode + " (Confidence: " + Math.round(confidence * 100) + "%)",
-                    tableId,
-                    "WAITER",
-                    assignedWaiterId,
-                    eventPk
-            );
-        } else if ("POSSIBLE_FLOOR_HAZARD".equals(eventType)) {
-            alertService.createOrUpdateAlert(
-                    restaurantId,
-                    "FLOOR_HAZARD",
-                    "HIGH",
-                    "HAZARD-ZONE-" + envelope.getZoneId(),
-                    "Floor hazard/spill detected in camera zone " + (envelope.getZoneId() != null ? envelope.getZoneId() : "floor") + " (Advisory)",
-                    null,
-                    "CLEANING",
-                    null,
-                    eventPk
-            );
-        } else if ("POSSIBLE_FALL".equals(eventType)) {
-            alertService.createOrUpdateAlert(
-                    restaurantId,
-                    "FALL_DETECTION",
-                    "CRITICAL",
-                    "FALL-ZONE-" + envelope.getZoneId(),
-                    "CRITICAL EMERGENCY: Possible fall detected in camera zone " + envelope.getZoneId() + "! Immediate assistance required.",
-                    null,
-                    "MANAGER",
-                    null,
-                    eventPk
-            );
-        } else if ("RESTRICTED_AREA_ENTRY".equals(eventType)) {
-            alertService.createOrUpdateAlert(
-                    restaurantId,
-                    "RESTRICTED_ENTRY",
-                    "HIGH",
-                    "RESTRICTED-ZONE-" + envelope.getZoneId(),
-                    "Security Notice: Person detected entering restricted zone " + envelope.getZoneId(),
-                    null,
-                    "MANAGER",
-                    null,
-                    eventPk
-            );
-        } else if ("CAMERA_STATE_CHANGED".equals(eventType) && envelope.getCameraId() != null) {
-            cameraRepository.findByRestaurantIdAndCameraId(restaurantId, envelope.getCameraId()).ifPresent(cam -> {
-                if (envelope.getData() != null && envelope.getData().containsKey("state")) {
-                    String state = String.valueOf(envelope.getData().get("state"));
-                    cam.setState(state);
-                    cam.setLastSeenAt(Instant.now());
-                    cameraRepository.save(cam);
-
-                    if ("DISCONNECTED".equals(state) || "ERROR".equals(state)) {
-                        alertService.createOrUpdateAlert(
-                                restaurantId,
-                                "CAMERA_DISCONNECTED",
-                                "MEDIUM",
-                                "CAM-DISCONNECTED-" + cam.getCameraId(),
-                                "Camera '" + cam.getName() + "' disconnected or signal lost.",
-                                null,
-                                "MANAGER",
-                                null,
-                                eventPk
-                        );
+        try {
+            if ("TABLE_OCCUPIED".equals(eventType) && tableId != null) {
+                Integer partySize = null;
+                if (envelope.getData() != null && envelope.getData().containsKey("estimatedPartySize")) {
+                    Object pSizeObj = envelope.getData().get("estimatedPartySize");
+                    if (pSizeObj instanceof Number) {
+                        partySize = ((Number) pSizeObj).intValue();
                     }
                 }
-            });
+                tableStateMachine.handleAiOccupied(restaurantId, tableId, confidence, envelope.getOccurredAt(), partySize);
+            } else if ("TABLE_VACATED".equals(eventType) && tableId != null) {
+                tableStateMachine.handleAiVacated(restaurantId, tableId, confidence, envelope.getOccurredAt());
+            } else if ("POSSIBLE_SERVICE_REQUEST".equals(eventType)) {
+                String tableCode = "Unknown";
+                Long assignedWaiterId = null;
+                if (tableId != null) {
+                    RestaurantTable tbl = tableRepository.findByRestaurantIdAndTableId(restaurantId, tableId).orElse(null);
+                    if (tbl != null) {
+                        tableCode = tbl.getTableCode();
+                        assignedWaiterId = tbl.getAssignedWaiterId();
+                    }
+                }
+
+                // Prevent duplicate open service request on retry if OPEN request already exists for this table
+                List<ServiceRequest> existingOpen = serviceRequestRepository
+                        .findByRestaurantIdAndTableIdAndStatus(restaurantId, tableId, "OPEN");
+                if (existingOpen.isEmpty()) {
+                    ServiceRequest sr = new ServiceRequest();
+                    sr.setRestaurantId(restaurantId);
+                    sr.setTableId(tableId);
+                    sr.setTableCode(tableCode);
+                    sr.setRequestType("CALL_WAITER");
+                    sr.setSource("AI_ADVISORY");
+                    sr.setStatus("OPEN");
+                    sr.setAssignedEmployeeId(assignedWaiterId);
+                    serviceRequestRepository.save(sr);
+                }
+
+                alertService.createOrUpdateAlert(
+                        restaurantId,
+                        "SERVICE_REQUEST_GESTURE",
+                        "MEDIUM",
+                        "SR-GESTURE-" + tableId,
+                        "Customer wave / gesture detected at " + tableCode + " (Confidence: " + Math.round(confidence * 100) + "%)",
+                        tableId,
+                        "WAITER",
+                        assignedWaiterId,
+                        eventPk
+                );
+            } else if ("POSSIBLE_FLOOR_HAZARD".equals(eventType)) {
+                alertService.createOrUpdateAlert(
+                        restaurantId,
+                        "FLOOR_HAZARD",
+                        "HIGH",
+                        "HAZARD-ZONE-" + envelope.getZoneId(),
+                        "Floor hazard/spill detected in camera zone " + (envelope.getZoneId() != null ? envelope.getZoneId() : "floor") + " (Advisory)",
+                        null,
+                        "CLEANING",
+                        null,
+                        eventPk
+                );
+            } else if ("POSSIBLE_FALL".equals(eventType)) {
+                alertService.createOrUpdateAlert(
+                        restaurantId,
+                        "FALL_DETECTION",
+                        "CRITICAL",
+                        "FALL-ZONE-" + envelope.getZoneId(),
+                        "CRITICAL EMERGENCY: Possible fall detected in camera zone " + envelope.getZoneId() + "! Immediate assistance required.",
+                        null,
+                        "MANAGER",
+                        null,
+                        eventPk
+                );
+            } else if ("RESTRICTED_AREA_ENTRY".equals(eventType)) {
+                alertService.createOrUpdateAlert(
+                        restaurantId,
+                        "RESTRICTED_ENTRY",
+                        "HIGH",
+                        "RESTRICTED-ZONE-" + envelope.getZoneId(),
+                        "Security Notice: Person detected entering restricted zone " + envelope.getZoneId(),
+                        null,
+                        "MANAGER",
+                        null,
+                        eventPk
+                );
+            } else if ("CAMERA_STATE_CHANGED".equals(eventType) && envelope.getCameraId() != null) {
+                cameraRepository.findByRestaurantIdAndCameraId(restaurantId, envelope.getCameraId()).ifPresent(cam -> {
+                    if (envelope.getData() != null && envelope.getData().containsKey("state")) {
+                        String state = String.valueOf(envelope.getData().get("state"));
+                        cam.setState(state);
+                        cam.setLastSeenAt(Instant.now());
+                        cameraRepository.save(cam);
+
+                        if ("DISCONNECTED".equals(state) || "ERROR".equals(state)) {
+                            alertService.createOrUpdateAlert(
+                                    restaurantId,
+                                    "CAMERA_DISCONNECTED",
+                                    "MEDIUM",
+                                    "CAM-DISCONNECTED-" + cam.getCameraId(),
+                                    "Camera '" + cam.getName() + "' disconnected or signal lost.",
+                                    null,
+                                    "MANAGER",
+                                    null,
+                                    eventPk
+                            );
+                        }
+                    }
+                });
+            }
+
+            aiEvent.setProcessingStatus("APPLIED");
+            aiEvent = aiEventRepository.save(aiEvent);
+            putInCache(cacheKey, now);
+
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("success", true);
+            resp.put("eventId", eventId);
+            resp.put("status", "ACCEPTED");
+            return resp;
+        } catch (Exception ex) {
+            log.error("AI Event {} processing failed during business rule execution: {}", eventId, ex.getMessage(), ex);
+            aiEvent.setProcessingStatus("FAILED");
+            try {
+                aiEventRepository.save(aiEvent);
+            } catch (Exception saveEx) {
+                log.warn("Failed to persist FAILED status for event {}: {}", eventId, saveEx.getMessage());
+            }
+            recentEventCache.remove(cacheKey);
+            throw ex;
         }
-
-        aiEvent.setProcessingStatus("APPLIED");
-        aiEvent = aiEventRepository.save(aiEvent);
-
-        Map<String, Object> resp = new HashMap<>();
-        resp.put("success", true);
-        resp.put("eventId", eventId);
-        resp.put("status", "ACCEPTED");
-        return resp;
     }
 
-    private void putInCache(String cacheKey, Instant now) {
+    public void putInCache(String cacheKey, Instant now) {
         recentEventCache.put(cacheKey, now);
         if (recentEventCache.size() > 5000) {
             Instant cutoff = now.minusSeconds(maxEventAgeSeconds);
@@ -304,6 +338,10 @@ public class AiEventIngestionService {
 
     public int getRecentEventCacheSize() {
         return recentEventCache.size();
+    }
+
+    public boolean isEventInCache(Long restaurantId, String eventId) {
+        return recentEventCache.containsKey(restaurantId + ":" + eventId);
     }
 
     public void clearRecentEventCache() {

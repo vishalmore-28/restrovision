@@ -10,6 +10,7 @@ import java.util.Optional;
 public interface ServiceRequestRepository extends JpaRepository<ServiceRequest, Long> {
     List<ServiceRequest> findByRestaurantIdOrderByCreatedAtDesc(Long restaurantId);
     List<ServiceRequest> findByRestaurantIdAndStatus(Long restaurantId, String status);
+    List<ServiceRequest> findByRestaurantIdAndTableIdAndStatus(Long restaurantId, Long tableId, String status);
     List<ServiceRequest> findByRestaurantIdAndStatusIn(Long restaurantId, List<String> statuses);
     Optional<ServiceRequest> findByRestaurantIdAndServiceRequestId(Long restaurantId, Long id);
     List<ServiceRequest> findByRestaurantIdAndAssignedEmployeeIdAndStatus(Long restaurantId, Long employeeId, String status);
