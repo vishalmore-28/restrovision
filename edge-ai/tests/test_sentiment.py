@@ -1,10 +1,14 @@
 """
-Unit and regression tests for Contextual Sentiment NLP (BUG-020).
+Unit and regression tests for Contextual Sentiment NLP (BUG-020 Remediation).
 Tests:
 - "not good" vs "not bad" contextual valence
 - Double negation cancellation ("not not good", "not without")
 - Negation lookbehind scope boundaries and punctuation reset
+- Contrastive conjunction scope resets ("but", "however", "although", "yet")
 - Intensifiers and diminishers
+- Mixed positive and negative clauses
+- Unknown or unsupported vocabulary
+- Malformed inputs (None, integers, non-strings)
 - Multi-topic categorization (Food Quality, Service Speed, Cleanliness, Value, Ambience)
 - Honest model metadata and uncalibrated confidence
 """
@@ -17,6 +21,7 @@ class TestContextualNegation:
         res = analyze_sentiment("The food was not good.")
         assert res["sentiment"] == "NEGATIVE"
         assert res["valence_score"] < 0
+        assert res["confidence_calibrated"] is False
 
     def test_not_bad_is_mitigated_neutral_or_positive(self):
         res = analyze_sentiment("The dal makhani was not bad.")
@@ -48,7 +53,7 @@ class TestContextualNegation:
 
 
 class TestNegationScopeAndBoundary:
-    def test_boundary_resets_negation_scope(self):
+    def test_boundary_resets_negation_scope_with_comma_and_but(self):
         # "Food was not good, but service was fast and attentive"
         # "not good" is negative, but comma and "but" reset scope so "fast" and "attentive" are positive
         comment = "Food was not good, but service was fast and attentive."
@@ -57,6 +62,13 @@ class TestNegationScopeAndBoundary:
         assert res["sentiment"] in ("POSITIVE", "NEUTRAL")
         assert "SERVICE_SPEED" in res["matched_categories"]
 
+    def test_contrastive_words_reset_negation(self):
+        # "The soup was not warm however the bread was fresh"
+        comment = "The soup was not warm however the bread was fresh"
+        res = analyze_sentiment(comment)
+        # "fresh" should be positive, not negated by "not" before "however"
+        assert res["valence_score"] >= 0
+
     def test_negation_does_not_leak_beyond_three_tokens(self):
         # "not" followed by 4 neutral words before "delicious":
         # lookbehind window is 3 tokens, so "delicious" should not be inverted
@@ -64,6 +76,27 @@ class TestNegationScopeAndBoundary:
         res = analyze_sentiment(comment)
         assert res["sentiment"] == "POSITIVE"
         assert res["valence_score"] > 0
+
+
+class TestMixedClausesAndUnknownVocabulary:
+    def test_mixed_positive_and_negative_clauses(self):
+        # "The food was delicious, but the wait was terrible."
+        # delicious (+1.2), wait (-0.7), terrible (-1.2) -> net negative (-0.7 / sqrt(0.7^2+1) = -0.6247)
+        comment = "The food was delicious, but the wait was terrible."
+        res = analyze_sentiment(comment)
+        assert "FOOD_QUALITY" in res["matched_categories"]
+        assert "SERVICE_SPEED" in res["matched_categories"]
+        assert res["sentiment"] == "NEGATIVE"
+        assert -0.8 <= res["valence_score"] <= -0.5
+
+    def test_unknown_or_unsupported_vocabulary(self):
+        # Nonsense or un-lexiconed words
+        comment = "xyz qwerty blorp floop zap"
+        res = analyze_sentiment(comment)
+        assert res["sentiment"] == "NEUTRAL"
+        assert res["valence_score"] == 0.0
+        assert res["category"] == "AMBIENCE"
+        assert res["confidence_calibrated"] is False
 
 
 class TestIntensifiersAndDiminishers:
@@ -105,17 +138,26 @@ class TestMultiTopicCategorization:
         assert res["sentiment"] == "POSITIVE"
 
 
-class TestEmptyAndEdgeInputs:
+class TestEmptyAndMalformedInputs:
     def test_empty_and_whitespace(self):
-        res = analyze_sentiment("")
-        assert res["sentiment"] == "NEUTRAL"
-        assert res["valence_score"] == 0.0
+        for empty_in in ["", "   \n\t  "]:
+            res = analyze_sentiment(empty_in)
+            assert res["sentiment"] == "NEUTRAL"
+            assert res["valence_score"] == 0.0
+            assert res["confidence_calibrated"] is False
 
-        res_space = analyze_sentiment("   \n\t  ")
-        assert res_space["sentiment"] == "NEUTRAL"
+    def test_none_and_non_string_types(self):
+        # None, integers, floats, lists
+        for bad_in in [None, 12345, 99.9, ["sample"]]:
+            res = analyze_sentiment(bad_in)
+            assert isinstance(res, dict)
+            assert "sentiment" in res
+            assert "confidence" in res
+            assert res["confidence_calibrated"] is False
 
     def test_honest_model_metadata(self):
         res = analyze_sentiment("Great food!")
         assert res["model_version"] == "sentiment-lexicon-valence-1.1.0"
         assert res["confidence_calibrated"] is False
         assert "algorithm" in res
+        assert "IndicBERT" not in res["model_version"]

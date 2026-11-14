@@ -126,7 +126,7 @@ def _tokenize(text: str) -> List[str]:
     raw_tokens = re.findall(r"[A-Za-z0-9]+(?:'[A-Za-z]+)?|[.,;!?]", text.lower())
     return raw_tokens
 
-def analyze_sentiment(comment: str) -> Dict[str, Any]:
+def analyze_sentiment(comment: Any) -> Dict[str, Any]:
     """
     Analyzes guest review comment using a contextual valence lexicon with:
     - 3-token lookbehind negation scope
@@ -134,7 +134,14 @@ def analyze_sentiment(comment: str) -> Dict[str, Any]:
     - Contextual mitigation for 'not bad' / 'not terrible'
     - Multi-topic category assignment
     """
-    if not comment or not comment.strip():
+    if comment is None:
+        raw_text = ""
+    elif not isinstance(comment, str):
+        raw_text = str(comment)
+    else:
+        raw_text = comment
+
+    if not raw_text.strip():
         return {
             "sentiment": "NEUTRAL",
             "category": "AMBIENCE",
@@ -142,10 +149,11 @@ def analyze_sentiment(comment: str) -> Dict[str, Any]:
             "valence_score": 0.0,
             "model_version": "sentiment-lexicon-valence-1.1.0",
             "algorithm": "Contextual Negation Valence Lexicon",
-            "confidence_calibrated": False
+            "confidence_calibrated": False,
+            "matched_categories": ["AMBIENCE"]
         }
 
-    tokens = _tokenize(comment)
+    tokens = _tokenize(raw_text)
     total_valence = 0.0
     scored_tokens_count = 0
     token_details = []
@@ -218,7 +226,7 @@ def analyze_sentiment(comment: str) -> Dict[str, Any]:
     heuristic_confidence = min(0.98, max(0.65, 0.70 + 0.15 * abs(normalized_score)))
 
     # Topic classification with frequency-based dominance
-    comment_lower = comment.lower()
+    comment_lower = raw_text.lower()
     category_scores: Dict[str, int] = {}
     for cat, kws in CATEGORY_KEYWORDS.items():
         match_count = sum(1 for kw in kws if kw in comment_lower)

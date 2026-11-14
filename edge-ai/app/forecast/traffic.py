@@ -29,7 +29,7 @@ def hyndman_fan_type7(data: List[float], p: float) -> float:
     Computes sample quantile using Hyndman-Fan Type 7 method:
     Virtual index h = (N - 1)*p + 1 (1-based).
     Linear interpolation between sorted values x[floor(h)-1] and x[ceil(h)-1].
-    Matches NumPy default (method='weibull'/type 7) and R type 7.
+    Matches NumPy default (method='linear', which is Hyndman-Fan Type 7) and R type 7.
     """
     if not data:
         return 0.0
@@ -52,7 +52,7 @@ def hyndman_fan_type7(data: List[float], p: float) -> float:
     
     return float(s[i - 1] + gamma * (s[i] - s[i - 1]))
 
-def _parse_timestamp(raw_val: Any, default_base: datetime, fallback_offset_hours: int = 0) -> datetime:
+def _parse_timestamp(raw_val: Any, default_base: datetime) -> Optional[datetime]:
     if isinstance(raw_val, datetime):
         return raw_val.astimezone(timezone.utc) if raw_val.tzinfo else raw_val.replace(tzinfo=timezone.utc)
     if isinstance(raw_val, str):
@@ -62,19 +62,23 @@ def _parse_timestamp(raw_val: Any, default_base: datetime, fallback_offset_hours
             dt = datetime.fromisoformat(cleaned)
             return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except Exception:
-            pass
+            return None
     if isinstance(raw_val, (int, float)):
-        # Hour of day (0-23)
-        return (default_base + timedelta(hours=int(raw_val))).replace(minute=0, second=0, microsecond=0)
-    return (default_base + timedelta(hours=fallback_offset_hours)).replace(minute=0, second=0, microsecond=0)
+        try:
+            val_int = int(raw_val)
+            return (default_base + timedelta(hours=val_int)).replace(minute=0, second=0, microsecond=0)
+        except Exception:
+            return None
+    return None
 
 def _sanitize_and_sort_history(history_window: List[Dict[str, Any]]) -> List[Tuple[datetime, int, int]]:
     """
     Extracts valid (timestamp, hour_of_day, guest_count) tuples, sorted chronologically.
-    Filters out malformed records or negative guests.
+    Filters out malformed records, non-numeric or negative guest counts.
+    Deduplicates observations sharing the same hourly timestamp bucket by retaining the latest record.
     """
     now_ref = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    parsed_items = []
+    deduped: Dict[datetime, Tuple[datetime, int, int]] = {}
     
     for idx, item in enumerate(history_window):
         if not isinstance(item, dict):
@@ -92,18 +96,24 @@ def _sanitize_and_sort_history(history_window: List[Dict[str, Any]]) -> List[Tup
             continue
         
         # Extract timestamp / hour
-        hour_raw = item.get("hour", item.get("timestamp", idx))
-        ts = _parse_timestamp(hour_raw, now_ref, fallback_offset_hours=idx)
-        hour_of_day = ts.hour
-        parsed_items.append((ts, hour_of_day, guests))
+        hour_raw = item.get("hour", item.get("timestamp", None))
+        if hour_raw is None:
+            continue
+        ts = _parse_timestamp(hour_raw, now_ref)
+        if ts is None:
+            continue
+        ts_bucket = ts.replace(minute=0, second=0, microsecond=0)
+        hour_of_day = ts_bucket.hour
+        deduped[ts_bucket] = (ts_bucket, hour_of_day, guests)
         
-    parsed_items.sort(key=lambda x: x[0])
-    return parsed_items
+    sorted_items = [deduped[k] for k in sorted(deduped.keys())]
+    return sorted_items
 
 def _impute_chronological_gaps(clean_items: List[Tuple[datetime, int, int]]) -> List[Tuple[datetime, int, int]]:
     """
     Detects non-consecutive hours (timestamp delta > 1h) and imputes intermediate
-    missing hours using seasonal prior ratio scaling rather than zero-filling.
+    missing hours using past-only seasonal prior ratio scaling rather than zero-filling.
+    Does NOT read, touch, or interpolate against future observations.
     """
     if len(clean_items) < 2:
         return clean_items
@@ -116,13 +126,16 @@ def _impute_chronological_gaps(clean_items: List[Tuple[datetime, int, int]]) -> 
         # Calculate step in hours
         delta_hours = int(round((curr_ts - prev_ts).total_seconds() / 3600.0))
         if delta_hours > 1 and delta_hours <= 48:
-            # Impute up to 48 missing intermediate hours
+            # Impute up to 48 missing intermediate hours using past-only seasonal scaling
             prev_weight = max(1, get_seasonal_weight(prev_h))
             for step in range(1, delta_hours):
                 imp_ts = prev_ts + timedelta(hours=step)
                 imp_h = imp_ts.hour
                 imp_weight = get_seasonal_weight(imp_h)
-                imputed_guests = max(0, int(round(prev_g * (imp_weight / prev_weight))))
+                if prev_g > 0:
+                    imputed_guests = max(0, int(round(prev_g * (imp_weight / prev_weight))))
+                else:
+                    imputed_guests = imp_weight
                 full_sequence.append((imp_ts, imp_h, imputed_guests))
         
         full_sequence.append(curr)
@@ -198,22 +211,23 @@ def _calculate_clipping_bounds(residuals: List[float]) -> Tuple[float, float, fl
 def generate_traffic_forecast(history_window: Optional[List[Dict[str, Any]]] = None, horizon_hours: int = 12) -> List[Dict[str, Any]]:
     """
     Generates hourly customer footfall forecast with empirical residual quantiles (P10, P50, P90).
-    Enforces minimum valid sample threshold N >= 12 (yielding M >= 10 out-of-sample residuals).
-    When N < 12, triggers transparent domain seasonal prior fallback with explicit metadata.
+    Enforces minimum valid sample threshold on ACTUAL observations: N_actual >= 12.
+    Imputed observations DO NOT count toward satisfying the 12-observation threshold.
+    When N_actual < 12, triggers transparent domain seasonal prior fallback with explicit metadata.
     """
     now_ref = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     history_raw = history_window or []
     
-    # 1. Clean, parse and sort historical observations
+    # 1. Clean, parse, deduplicate, and sort actual historical observations
     clean_items = _sanitize_and_sort_history(history_raw)
-    imputed_items = _impute_chronological_gaps(clean_items)
-    n_valid = len(imputed_items)
+    n_actual = len(clean_items)
     
     # Reference start for horizon forecasting
-    last_ts = imputed_items[-1][0] if n_valid > 0 else now_ref
+    last_ts = clean_items[-1][0] if n_actual > 0 else now_ref
     
-    # 2. Fallback check: Minimum valid sample requirement is N >= 12
-    if n_valid < 12:
+    # 2. Fallback check: Minimum actual valid sample requirement is N_actual >= 12.
+    # Imputed gap observations DO NOT satisfy or count toward this threshold.
+    if n_actual < 12:
         forecast = []
         for h in range(1, horizon_hours + 1):
             target_time = last_ts + timedelta(hours=h)
@@ -239,7 +253,8 @@ def generate_traffic_forecast(history_window: Optional[List[Dict[str, Any]]] = N
                 "algorithm": "Domain Seasonal Prior Fallback",
                 "metadata": {
                     "fallback_applied": True,
-                    "sample_count": n_valid,
+                    "actual_sample_count": n_actual,
+                    "sample_count": n_actual,
                     "minimum_required": 12,
                     "reason": "INSUFFICIENT_SAMPLE_SIZE",
                     "disclaimer": "Predictions generated from calibrated hourly prior weights. Uncalibrated confidence intervals."
@@ -247,21 +262,30 @@ def generate_traffic_forecast(history_window: Optional[List[Dict[str, Any]]] = N
             })
         return forecast
 
-    # 3. Rolling-origin out-of-sample residual series starting at k=3
-    residuals = _compute_rolling_residuals(imputed_items)
-    m_residuals = len(residuals) # M = n_valid - 2
+    # 3. Only when actual observations satisfy threshold (N_actual >= 12),
+    # impute any intermediate missing hourly gaps using past-only scaling.
+    imputed_items = _impute_chronological_gaps(clean_items)
+    n_series = len(imputed_items)
+    last_ts = imputed_items[-1][0]
     
-    # 4. Outlier detection and clamping bounds
+    # 4. Rolling-origin out-of-sample residual series starting at k=3
+    residuals = _compute_rolling_residuals(imputed_items)
+    m_residuals = len(residuals) # M = n_series - 2
+    
+    # 5. Outlier detection and clamping bounds
+    # Order of operations:
+    # a. Compute clipping bounds on unclipped residuals (IQR >= 1.0 vs MAD fallback)
+    # b. Clamp residual sample to protect forecast quantiles from extreme anomalies
+    # c. Calculate empirical quantiles on clamped residuals using Hyndman-Fan Type 7
     clip_lower, clip_upper, iqr_val, scale_mode = _calculate_clipping_bounds(residuals)
     clamped_residuals = [max(clip_lower, min(clip_upper, r)) for r in residuals]
     
-    # 5. Hyndman-Fan Type 7 quantiles on clamped residuals
     q10_res = hyndman_fan_type7(clamped_residuals, 0.10)
     q50_res = hyndman_fan_type7(clamped_residuals, 0.50)
     q90_res = hyndman_fan_type7(clamped_residuals, 0.90)
     
     # 6. Baseline rolling average from most recent window
-    recent_window = min(n_valid, 6)
+    recent_window = min(n_series, 6)
     recent_obs = imputed_items[-recent_window:]
     recent_mean_y = sum(obs[2] for obs in recent_obs) / float(recent_window)
     recent_mean_s = sum(get_seasonal_weight(obs[1]) for obs in recent_obs) / float(recent_window)
@@ -295,7 +319,10 @@ def generate_traffic_forecast(history_window: Optional[List[Dict[str, Any]]] = N
             "algorithm": "Empirical Residual Quantiles (Hyndman-Fan Type 7)",
             "metadata": {
                 "fallback_applied": False,
-                "sample_count": n_valid,
+                "actual_sample_count": n_actual,
+                "sample_count": n_actual,
+                "imputed_gap_count": n_series - n_actual,
+                "total_series_count": n_series,
                 "residual_count": m_residuals,
                 "iqr": round(iqr_val, 4),
                 "scale_mode": scale_mode,
