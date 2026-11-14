@@ -20,15 +20,18 @@ Remediation Group 3 addresses 4 critical vulnerabilities and quality defects:
 
 ### Backend Changes
 
-#### 1. `Backend/src/main/java/com/restrovision/security/LoginRateLimiterService.java` (New File)
+#### 1. `Backend/src/main/java/com/restrovision/security/LoginRateLimiterService.java` (Hardened)
 - Implemented in-memory sliding-window limiter using thread-safe `ConcurrentHashMap<String, Deque<Instant>>`.
 - Dual-dimension tracking:
   - Per-account window (configurable, default: 5 attempts per 60 seconds).
   - Per-IP window (configurable, default: 10 attempts per 60 seconds).
-- IP failure counter does **not** clear on successful login to prevent alternation attacks (attacker alternating between 1 valid login and multiple invalid attempts).
-- `resolveClientIp(HttpServletRequest)` checks `X-Forwarded-For` **only** when `request.getRemoteAddr()` matches trusted proxy list (`127.0.0.1, ::1`). Untrusted remote addresses cannot spoof client IP.
+- Atomic updates: All sliding-window modifications execute inside atomic `compute()` operations to prevent race conditions during concurrent authentication spikes.
+- Bounded memory protection: Soft-bounds cache to 5,000 entries. Saturation eviction removes single-attempt noise entries while strictly protecting actively blocked accounts and IPs from premature eviction.
+- Reverse proxy security: `resolveClientIp(HttpServletRequest)` checks `X-Forwarded-For` **only** when `request.getRemoteAddr()` matches trusted proxy list (`127.0.0.1, ::1`). For chained proxies (`client, proxy1, proxy2`), extracts the first client IP.
+- IP failure counter does **not** clear on successful login to prevent alternation attacks.
 - Account normalization: `email.trim().toLowerCase(Locale.ROOT)` prevents case-variation bypass.
 - Returns `RateLimitResult` containing remaining retry seconds.
+- Architectural note: Formally documented as process-local in-memory state; clustering across multi-instance nodes requires Redis or sticky reverse-proxy sessions.
 
 #### 2. `Backend/src/main/java/com/restrovision/controller/AuthController.java` (Modified)
 - Injected `LoginRateLimiterService`.
@@ -44,22 +47,23 @@ Remediation Group 3 addresses 4 critical vulnerabilities and quality defects:
 - Preserves quotes (`"`, `'`), ampersands (`&`), newlines (`\n`), and multilingual Unicode (Devanagari / Marathi / Hindi).
 - Avoids HTML entity double-encoding (does not convert `"` to `&quot;`), allowing natural database storage and safe React JSX text rendering.
 
-#### 4. `Backend/src/main/java/com/restrovision/security/FeedbackRateLimiterService.java` (New File)
+#### 4. `Backend/src/main/java/com/restrovision/security/FeedbackRateLimiterService.java` (Hardened)
 - In-memory process-local limiter enforcing flooding thresholds:
   - 10 submissions per 5 minutes per client IP.
-  - 15-second cooldown per table.
-  - 60-second duplicate submission rejection (identical comment content for same table).
-- Thread-safe bounded memory storage with pruning.
+  - Identity-aware 15-second cooldown per client table interaction (`clientIp + ":" + tableId`), allowing dining companions at the same table to leave individual feedback without physical table lockouts.
+  - 60-second duplicate submission rejection (identical comment content for same table) evaluated before cooldown to ensure explicit duplicate error messaging.
+- Atomic updates: All window modifications executed inside atomic `compute()` operations.
+- Thread-safe bounded memory storage with pruning and hard limit of 5,000 entries.
 
 #### 5. `Backend/src/main/java/com/restrovision/controller/PublicQrController.java` (Modified)
 - Injected `FeedbackRateLimiterService` and `HtmlSanitizer`.
 - In `POST /api/v1/public/feedback`:
   - Enforces rating range `1 <= rating <= 5`.
   - Verifies table existence and rejects tables with status `OUT_OF_SERVICE`.
-  - Enforces session ownership: validates that `sessionId` (if provided) matches a session belonging to `tableId`.
+  - Enforces session ownership and lifecycle: validates that `sessionId` belongs to the table, and rejects submissions if the table's current active session has superseded the provided session (`IllegalArgumentException` with HTTP 400).
   - Enforces 1,000 character maximum payload limit.
   - Passes comment through `HtmlSanitizer.sanitizeToPlainText()`.
-  - Checks feedback rate limits (IP limit, table cooldown, duplicate filter), returning RFC 7807 429 `ProblemDetail` if breached.
+  - Checks feedback rate limits (IP limit, identity-aware table cooldown, duplicate filter), returning RFC 7807 429 `ProblemDetail` if breached.
 
 #### 6. `Backend/src/main/resources/application.yml` (Modified)
 - Added configuration properties:
@@ -80,7 +84,7 @@ Remediation Group 3 addresses 4 critical vulnerabilities and quality defects:
   ```
 
 #### 7. `Backend/src/test/java/com/restrovision/RestrovisionApplicationTests.java` (Modified)
-- Added 10 empirical tests:
+- Added 15 empirical tests covering initial Group 3 implementation and final verification:
   - `07o`: Login rate limiting by account (5 attempts -> 6th triggers 429).
   - `07p`: Login rate limiting uniform response without account enumeration.
   - `07q`: Successful login resets account counter, preserves IP counter.
@@ -90,7 +94,12 @@ Remediation Group 3 addresses 4 critical vulnerabilities and quality defects:
   - `07t`: Feedback flooding payload length bound (1000 chars).
   - `07u`: Feedback flooding rejection for OUT_OF_SERVICE table.
   - `07v`: Feedback flooding session ID ownership validation.
-  - `07w`: Feedback flooding table cooldown and duplicate rejection with 429.
+  - `07w`: Identity-aware feedback table cooldown (Customer A succeeds, Customer B succeeds within 15s, Customer A duplicate rejected with 429).
+  - `07w2`: Feedback session lifecycle and old session rejection after new session seated.
+  - `07w3`: Login rate limiter concurrency (20 threads) and bounded memory under 5,500 flood requests without evicting locked accounts.
+  - `07w4`: Feedback rate limiter concurrency (20 threads) and bounded memory under 5,500 flood requests.
+  - `07w5`: Trusted proxy chained X-Forwarded-For parsing (`client, proxy1`) and untrusted proxy rejection.
+  - `07w6`: Customer feedback XSS output-path audit, React plain-text interpolation, and Devanagari multilingual verification.
 
 ---
 

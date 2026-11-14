@@ -12,9 +12,21 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
+/**
+ * Sliding-window login rate limiter providing brute-force protection (BUG-008).
+ * Enforces:
+ *  1. IP-level sliding window (default: 10 attempts / 60 seconds).
+ *  2. Account-level sliding window (default: 5 attempts / 60 seconds).
+ *
+ * NOTE ON DEPLOYMENT ARCHITECTURE:
+ * This rate-limiting mechanism is process-local (in-memory ConcurrentHashMap) and does NOT provide
+ * shared limits across multiple backend instances. In multi-node deployments behind a reverse proxy,
+ * sticky sessions or a shared Redis distributed token bucket must be configured.
+ */
 @Service
 public class LoginRateLimiterService {
     private static final Logger log = LoggerFactory.getLogger(LoginRateLimiterService.class);
+    private static final int MAX_CAPACITY = 5000;
 
     @Value("${restrovision.security.rate-limit.max-attempts-per-ip:10}")
     private int maxAttemptsPerIp = 10;
@@ -115,11 +127,22 @@ public class LoginRateLimiterService {
 
     public void recordFailure(String clientIp, String normalizedEmail) {
         Instant now = Instant.now();
+        Instant cutoff = now.minusSeconds(windowSeconds);
         if (clientIp != null && !clientIp.isBlank()) {
-            ipAttempts.computeIfAbsent(clientIp, k -> new ConcurrentLinkedDeque<>()).addLast(now);
+            ipAttempts.compute(clientIp, (k, deque) -> {
+                if (deque == null) deque = new ConcurrentLinkedDeque<>();
+                prune(deque, cutoff);
+                deque.addLast(now);
+                return deque;
+            });
         }
         if (normalizedEmail != null && !normalizedEmail.isBlank()) {
-            accountAttempts.computeIfAbsent(normalizedEmail, k -> new ConcurrentLinkedDeque<>()).addLast(now);
+            accountAttempts.compute(normalizedEmail, (k, deque) -> {
+                if (deque == null) deque = new ConcurrentLinkedDeque<>();
+                prune(deque, cutoff);
+                deque.addLast(now);
+                return deque;
+            });
         }
         cleanOldEntries();
     }
@@ -140,7 +163,7 @@ public class LoginRateLimiterService {
     }
 
     private void cleanOldEntries() {
-        if (ipAttempts.size() > 5000 || accountAttempts.size() > 5000) {
+        if (ipAttempts.size() > MAX_CAPACITY || accountAttempts.size() > MAX_CAPACITY) {
             Instant cutoff = Instant.now().minusSeconds(windowSeconds);
             ipAttempts.entrySet().removeIf(e -> {
                 prune(e.getValue(), cutoff);
@@ -150,7 +173,24 @@ public class LoginRateLimiterService {
                 prune(e.getValue(), cutoff);
                 return e.getValue().isEmpty();
             });
+
+            // Eviction strategy under saturation:
+            // Remove noise entries with lowest attempt counts first, but NEVER evict currently rate-limited/blocked accounts or IPs!
+            if (accountAttempts.size() > MAX_CAPACITY) {
+                accountAttempts.entrySet().removeIf(e -> e.getValue().size() < maxAttemptsPerAccount);
+            }
+            if (ipAttempts.size() > MAX_CAPACITY) {
+                ipAttempts.entrySet().removeIf(e -> e.getValue().size() < maxAttemptsPerIp);
+            }
         }
+    }
+
+    public int getIpAttemptsSize() {
+        return ipAttempts.size();
+    }
+
+    public int getAccountAttemptsSize() {
+        return accountAttempts.size();
     }
 
     private Set<String> getTrustedProxies() {

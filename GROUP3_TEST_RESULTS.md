@@ -1,5 +1,5 @@
 # RESTROVISION v2.0 — Remediation Group 3 Test Results
-**Test Execution Date**: 2026-11-14T15:31:03+05:30  
+**Test Execution Date**: 2026-11-14T19:25:00+05:30  
 **Target Branch**: `feature/production-hardening`  
 **Execution Environment**: Windows 11 Enterprise / OpenJDK 25.0.4.1 / Node v22.14.0 / Python 3.14.3 (Oracle DB Home)  
 **Status**: 100% PASSING  
@@ -10,13 +10,13 @@
 
 | Verification Suite | Tests Executed | Passed | Failed | Errors | Skipped | Status |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Backend Unit & Integration Suite** | **78** | **78** | **0** | **0** | **0** | **PASSED** |
+| **Backend Unit & Integration Suite** | **83** | **83** | **0** | **0** | **0** | **PASSED** |
 | - `EdgeSecurityProductionVerificationTest` | 6 | 6 | 0 | 0 | 0 | PASSED |
 | - `FlywayProductionVerificationTest` | 4 | 4 | 0 | 0 | 0 | PASSED |
 | - `TenantContextSafetyTest` | 5 | 5 | 0 | 0 | 0 | PASSED |
 | - `Group2PerformanceAndRegressionTest` | 4 | 4 | 0 | 0 | 0 | PASSED |
 | - `WebSocketIntegrationProductionTest` | 11 | 11 | 0 | 0 | 0 | PASSED |
-| - `RestrovisionApplicationTests` | 48 | 48 | 0 | 0 | 0 | PASSED |
+| - `RestrovisionApplicationTests` | 53 | 53 | 0 | 0 | 0 | PASSED |
 | **Edge AI & Vision State Engine** | **5** | **5** | **0** | **0** | **0** | **PASSED** |
 | **Frontend Production Build (`vite build`)** | **1,610 modules** | **1,610** | **0** | **0** | **0** | **PASSED (324 kB bundle)** |
 | **Frontend Empty Catch Block Audit** | **17 locations** | **17 fixed**| **0** | **0** | **0** | **PASSED (0 remaining)** |
@@ -25,12 +25,12 @@
 
 ## 2. Group 3 Focused Backend Test Results
 
-The following 10 tests were specifically added and executed in `RestrovisionApplicationTests`:
+The following 15 tests cover Group 3 implementation and the final security verification in `RestrovisionApplicationTests`:
 
 ```
 [INFO] Running com.restrovision.RestrovisionApplicationTests
 ...
-[INFO] Tests run: 48, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 19.43 s -- in com.restrovision.RestrovisionApplicationTests
+[INFO] Tests run: 53, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 19.82 s -- in com.restrovision.RestrovisionApplicationTests
 ```
 
 ### Detailed Breakdown of Group 3 Tests
@@ -46,7 +46,12 @@ The following 10 tests were specifically added and executed in `RestrovisionAppl
 | `07t` | `testFeedbackFloodingRejectionExceedingPayloadLength` | 1,001-character feedback payload is rejected with HTTP 400 Bad Request detailing maximum length violation. | **PASS** |
 | `07u` | `testFeedbackFloodingRejectionOutOfServiceTable` | Submission targeting a table marked `OUT_OF_SERVICE` is rejected with HTTP 400 Bad Request. | **PASS** |
 | `07v` | `testFeedbackFloodingSessionIdValidation` | Submission with a `sessionId` not belonging to the targeted table is rejected with HTTP 400 Bad Request. | **PASS** |
-| `07w` | `testFeedbackFloodingTableCooldownAndDuplicateBlocked` | Second submission to Table 2 within 15-second cooldown returns HTTP 429 Too Many Requests. Duplicate comment within 60s rejected. | **PASS** |
+| `07w` | `testFeedbackFloodingTableCooldownAndDistinctCustomers` | Identity-aware cooldown: Customer A submits successfully; Customer B at same table from different IP submits within 15s without block; Customer A duplicate within 60s rejected with 429; Customer A rapid second submission blocked with 429. | **PASS** |
+| `07w2` | `testFeedbackSessionLifecycleAndOldSessionRejection` | New active session submits feedback; after a subsequent session seats on the table, old session submission is rejected with HTTP 400 Bad Request. Cross-table session rejected with HTTP 400. | **PASS** |
+| `07w3` | `testLoginRateLimiterConcurrencyAndBoundedMemory` | 20 concurrent threads perform failed logins, threshold is reached atomically; flooding 5,500 fake accounts prunes noise while strictly retaining blocked victim account/IP. Cache bounded <= 5,000. | **PASS** |
+| `07w4` | `testFeedbackRateLimiterConcurrencyAndBoundedMemory` | 20 concurrent threads submit feedback, IP threshold is reached atomically; flooding 5,500 noise keys prunes cleanly and maintains cache size <= 5,000. | **PASS** |
+| `07w5` | `testTrustedProxyChainedForwardedForResolution` | Chained `X-Forwarded-For: 203.0.113.195, 70.41.3.18` from trusted proxy (`127.0.0.1`) extracts first client IP (`203.0.113.195`). Untrusted remote IP ignores header entirely. | **PASS** |
+| `07w6` | `testCustomerFeedbackXssOutputPathAudit` | End-to-end feedback storage and analytics retrieval: JSON output verified valid; quotes, newlines, and Devanagari Unicode intact; zero double-HTML entity encoding. | **PASS** |
 
 ---
 

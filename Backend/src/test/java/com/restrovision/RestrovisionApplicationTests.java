@@ -800,9 +800,11 @@ class RestrovisionApplicationTests {
         table1.setCurrentSessionId(null);
         tableRepository.save(table1);
 
-        sessionRepository.findByRestaurantIdAndTableIdAndStatus(1L, 1L, "ACTIVE").ifPresent(s -> {
-            s.setStatus("CLOSED");
-            sessionRepository.save(s);
+        sessionRepository.findByRestaurantIdAndTableIdOrderBySeatedAtDesc(1L, 1L).forEach(s -> {
+            if ("ACTIVE".equals(s.getStatus())) {
+                s.setStatus("CLOSED");
+                sessionRepository.save(s);
+            }
         });
 
         alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(1L, "TABLE-OCCUPIED-1", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"))
@@ -909,9 +911,11 @@ class RestrovisionApplicationTests {
         table2.setCurrentSessionId(null);
         tableRepository.save(table2);
 
-        sessionRepository.findByRestaurantIdAndTableIdAndStatus(1L, 2L, "ACTIVE").ifPresent(s -> {
-            s.setStatus("CLOSED");
-            sessionRepository.save(s);
+        sessionRepository.findByRestaurantIdAndTableIdOrderBySeatedAtDesc(1L, 2L).forEach(s -> {
+            if ("ACTIVE".equals(s.getStatus())) {
+                s.setStatus("CLOSED");
+                sessionRepository.save(s);
+            }
         });
 
         alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(1L, "TABLE-OCCUPIED-2", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"))
@@ -1421,28 +1425,292 @@ class RestrovisionApplicationTests {
     }
 
     @Test
-    @DisplayName("07w: BUG-013: Feedback flooding enforces table cooldown and duplicate detection with 429")
-    void testFeedbackFloodingTableCooldownAndDuplicateBlocked() throws Exception {
+    @DisplayName("07w: BUG-013: Feedback cooldown allows distinct customers, blocks duplicates and rapid spam with 429")
+    void testFeedbackFloodingTableCooldownAndDistinctCustomers() throws Exception {
         feedbackRateLimiterService.clear();
 
-        Map<String, Object> req = Map.of(
+        // 1. Customer A (IP 198.51.100.1) submits feedback for Table 2
+        Map<String, Object> reqA = Map.of(
                 "tableId", 2L,
                 "rating", 5,
-                "comment", "First legitimate feedback"
+                "comment", "First legitimate feedback from Customer A"
         );
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr("198.51.100.1");
+                            return request;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqA)))
+                .andExpect(status().isOk());
 
-        // 1. First submission succeeds
+        // 2. Customer B (IP 198.51.100.2) submits DIFFERENT feedback for Table 2 within 15 seconds -> SUCCEEDS!
+        Map<String, Object> reqB = Map.of(
+                "tableId", 2L,
+                "rating", 4,
+                "comment", "Different legitimate feedback from Customer B"
+        );
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr("198.51.100.2");
+                            return request;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqB)))
+                .andExpect(status().isOk());
+
+        // 3. Customer A submits IDENTICAL feedback again within 60 seconds -> returns 429 (duplicate detected)
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr("198.51.100.1");
+                            return request;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqA)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("Duplicate feedback detected")));
+
+        // 4. Customer A submits DIFFERENT feedback within 15 seconds cooldown -> returns 429 (table cooldown for client)
+        Map<String, Object> reqA2 = Map.of(
+                "tableId", 2L,
+                "rating", 3,
+                "comment", "Rapid second feedback from Customer A"
+        );
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .with(request -> {
+                            request.setRemoteAddr("198.51.100.1");
+                            return request;
+                        })
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(reqA2)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("Feedback was recently submitted from your device")));
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07w2: BUG-013: Old sessions cannot submit feedback after a new table session has started")
+    void testFeedbackSessionLifecycleAndOldSessionRejection() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        // 1. Initial active session on Table 1 is Session 1
+        RestaurantTable t1 = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
+        Long originalSessionId = t1.getCurrentSessionId();
+
+        // Create a new session for Table 1 (Session 2 starts)
+        TableSession newSession = new TableSession(1L, 1L, "SYSTEM", 4);
+        newSession = sessionRepository.save(newSession);
+        t1.setCurrentSessionId(newSession.getSessionId());
+        tableRepository.save(t1);
+
+        TableSession otherTableSession = null;
+        try {
+            // 2. New session submits feedback -> SUCCEEDS
+            Map<String, Object> newSessionReq = Map.of(
+                    "tableId", 1L,
+                    "sessionId", newSession.getSessionId(),
+                    "rating", 5,
+                    "comment", "New party enjoying dinner"
+            );
+            mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(newSessionReq)))
+                    .andExpect(status().isOk());
+
+            // 3. Old session attempts to submit feedback AFTER new session has started -> REJECTED with 400
+            Map<String, Object> oldSessionReq = Map.of(
+                    "tableId", 1L,
+                    "sessionId", originalSessionId,
+                    "rating", 4,
+                    "comment", "Old session late feedback"
+            );
+            mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(oldSessionReq)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("is expired. A new session has already started")));
+
+            // 4. Session belonging to another table (Table 2's session) -> REJECTED with 400
+            otherTableSession = new TableSession(1L, 2L, "SYSTEM", 2);
+            otherTableSession = sessionRepository.save(otherTableSession);
+            Map<String, Object> wrongTableReq = Map.of(
+                    "tableId", 1L,
+                    "sessionId", otherTableSession.getSessionId(),
+                    "rating", 4,
+                    "comment", "Wrong table feedback"
+            );
+            mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(wrongTableReq)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("does not belong to table 1")));
+
+        } finally {
+            if (newSession != null && newSession.getSessionId() != null) {
+                sessionRepository.deleteById(newSession.getSessionId());
+            }
+            if (otherTableSession != null && otherTableSession.getSessionId() != null) {
+                sessionRepository.deleteById(otherTableSession.getSessionId());
+            }
+            RestaurantTable cur = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElse(null);
+            if (cur != null) {
+                cur.setCurrentSessionId(originalSessionId);
+                tableRepository.save(cur);
+            }
+            feedbackRateLimiterService.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("07w3: BUG-008: Login rate limiter concurrency, threshold enforcement, and bounded memory with non-eviction of blocked accounts")
+    void testLoginRateLimiterConcurrencyAndBoundedMemory() throws Exception {
+        loginRateLimiterService.clear();
+
+        // 1. Concurrency: 20 threads submit failures simultaneously for target account
+        int threadCount = 20;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    loginRateLimiterService.recordFailure("10.0.0.1", "victim@restrovision.local");
+                } catch (Exception ignored) {
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+        startLatch.countDown();
+        assertThat(doneLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        executor.shutdown();
+
+        // Verify: Threshold (5) was reached; checkLimit returns blocked=true
+        LoginRateLimiterService.RateLimitResult res = loginRateLimiterService.checkLimit("10.0.0.1", "victim@restrovision.local");
+        assertThat(res.isBlocked()).isTrue();
+        assertThat(res.getRetryAfterSeconds()).isGreaterThan(0);
+
+        // 2. Bounded Memory & Eviction Protection:
+        // Attacker floods 5,500 distinct accounts each with 1 failure, attempting to push victim out of cache
+        for (int i = 0; i < 5500; i++) {
+            loginRateLimiterService.recordFailure("10.0.0.2", "noise_user_" + i + "@evil.com");
+        }
+
+        // Verify:
+        // a) Size is bounded (<= 5000)
+        assertThat(loginRateLimiterService.getAccountAttemptsSize()).isLessThanOrEqualTo(5000);
+        // b) Victim account is STILL blocked and was NOT evicted!
+        LoginRateLimiterService.RateLimitResult victimCheck = loginRateLimiterService.checkLimit("10.0.0.1", "victim@restrovision.local");
+        assertThat(victimCheck.isBlocked()).isTrue();
+
+        loginRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07w4: BUG-013: Feedback rate limiter concurrency, threshold enforcement, and bounded memory")
+    void testFeedbackRateLimiterConcurrencyAndBoundedMemory() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        // 1. Concurrency: 20 threads record submissions for same client IP
+        int threadCount = 20;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(threadCount);
+
+        for (int i = 0; i < threadCount; i++) {
+            final int idx = i;
+            executor.submit(() -> {
+                try {
+                    startLatch.await();
+                    feedbackRateLimiterService.recordSubmission("10.10.10.10", 1L, 5, "Comment " + idx);
+                } catch (Exception ignored) {
+                } finally {
+                    doneLatch.countDown();
+                }
+            });
+        }
+        startLatch.countDown();
+        assertThat(doneLatch.await(5, TimeUnit.SECONDS)).isTrue();
+        executor.shutdown();
+
+        // IP threshold is 10. With 20 recorded submissions, IP limit is strictly blocked
+        FeedbackRateLimiterService.FeedbackLimitResult res = feedbackRateLimiterService.checkLimits("10.10.10.10", 2L, 5, "Distinct");
+        assertThat(res.isBlocked()).isTrue();
+        assertThat(res.getReason()).contains("Feedback submission limit reached");
+
+        // 2. Bounded Memory:
+        // Inject 5,500 distinct client IPs / fingerprints
+        for (int i = 0; i < 5500; i++) {
+            feedbackRateLimiterService.recordSubmission("10.20." + (i / 256) + "." + (i % 256), (long) (i % 10 + 1), 5, "Noise " + i);
+        }
+
+        // Verify bounded size
+        assertThat(feedbackRateLimiterService.getIpHistorySize()).isLessThanOrEqualTo(5000);
+        assertThat(feedbackRateLimiterService.getDuplicateFingerprintsSize()).isLessThanOrEqualTo(5000);
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07w5: BUG-008: Trusted proxy handles chained X-Forwarded-For and ignores untrusted proxy chains")
+    void testTrustedProxyChainedForwardedForResolution() {
+        org.springframework.mock.web.MockHttpServletRequest request = new org.springframework.mock.web.MockHttpServletRequest();
+
+        // 1. Trusted proxy remote address (127.0.0.1) with chained X-Forwarded-For
+        request.setRemoteAddr("127.0.0.1");
+        request.addHeader("X-Forwarded-For", "203.0.113.195, 10.0.0.1, 192.168.1.1");
+        String resolvedTrusted = loginRateLimiterService.resolveClientIp(request);
+        assertThat(resolvedTrusted).isEqualTo("203.0.113.195");
+
+        // 2. Untrusted proxy remote address (198.51.100.99) with spoofed X-Forwarded-For
+        request = new org.springframework.mock.web.MockHttpServletRequest();
+        request.setRemoteAddr("198.51.100.99");
+        request.addHeader("X-Forwarded-For", "203.0.113.195, 10.0.0.1");
+        String resolvedUntrusted = loginRateLimiterService.resolveClientIp(request);
+        assertThat(resolvedUntrusted).isEqualTo("198.51.100.99");
+    }
+
+    @Test
+    @DisplayName("07w6: BUG-009: Feedback output path audit verifies JSON serialization, Marathi/Hindi Unicode, and quotes intact")
+    void testCustomerFeedbackXssOutputPathAudit() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        // Manager logs in to inspect feedback
+        Map<String, String> tokens = loginUser("manager@restrovision.local", "Manager@123");
+        String managerToken = tokens.get("accessToken");
+
+        // Submit new feedback with multilingual text, quotes, and newlines
+        String rawComment = "चविष्ट जेवण! \"Biryani & Paneer Tikka was wonderful.\"\nWill visit again.";
+        Map<String, Object> req = Map.of(
+                "tableId", 3L,
+                "rating", 5,
+                "comment", rawComment
+        );
         mockMvc.perform(post("/api/v1/public/feedback")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .characterEncoding(StandardCharsets.UTF_8.name())
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isOk());
 
-        // 2. Immediate second submission for Table 2 within 15s cooldown returns 429
-        mockMvc.perform(post("/api/v1/public/feedback")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(req)))
-                .andExpect(status().isTooManyRequests())
-                .andExpect(jsonPath("$.title").value("Too Many Requests"));
+        // Fetch feedback list via /api/v1/analytics/feedback
+        MvcResult result = mockMvc.perform(get("/api/v1/analytics/feedback")
+                        .header("Authorization", "Bearer " + managerToken))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertThat(result.getResponse().getContentType()).contains("application/json");
+
+        String responseJson = result.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        // Verify exact text preserved:
+        assertThat(responseJson).contains("चविष्ट जेवण!");
+        assertThat(responseJson).contains("Biryani & Paneer Tikka was wonderful.");
+        assertThat(responseJson).doesNotContain("&amp;quot;");
+        assertThat(responseJson).doesNotContain("&lt;");
+        assertThat(responseJson).doesNotContain("&gt;");
 
         feedbackRateLimiterService.clear();
     }

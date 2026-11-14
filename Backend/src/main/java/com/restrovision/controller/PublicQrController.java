@@ -3,6 +3,7 @@ package com.restrovision.controller;
 import com.restrovision.domain.CustomerFeedback;
 import com.restrovision.domain.RestaurantTable;
 import com.restrovision.domain.ServiceRequest;
+import com.restrovision.domain.TableSession;
 import com.restrovision.dto.FeedbackDtos.CustomerFeedbackRequest;
 import com.restrovision.repository.CustomerFeedbackRepository;
 import com.restrovision.repository.RestaurantTableRepository;
@@ -145,9 +146,14 @@ public class PublicQrController {
 
         // 3. Session validation (if sessionId provided)
         if (request.getSessionId() != null) {
-            sessionRepository.findByRestaurantIdAndSessionId(restaurantId, request.getSessionId())
+            TableSession session = sessionRepository.findByRestaurantIdAndSessionId(restaurantId, request.getSessionId())
                     .filter(s -> table.getTableId().equals(s.getTableId()))
                     .orElseThrow(() -> new IllegalArgumentException("Provided sessionId does not belong to table " + tableId));
+
+            // If a new session has started on this table, reject feedback for the superseded/old session
+            if (table.getCurrentSessionId() != null && !table.getCurrentSessionId().equals(session.getSessionId())) {
+                throw new IllegalArgumentException("Session " + request.getSessionId() + " is expired. A new session has already started for table " + tableId);
+            }
         }
 
         // 4. Payload size limit (BUG-013)

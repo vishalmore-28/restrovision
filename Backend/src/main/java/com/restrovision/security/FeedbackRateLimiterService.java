@@ -44,8 +44,9 @@ public class FeedbackRateLimiterService {
     private int maxCommentLength = 1000;
 
     private final ConcurrentHashMap<String, Deque<Instant>> ipHistory = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, Instant> tableLastSubmission = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Instant> clientTableCooldown = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Instant> duplicateFingerprints = new ConcurrentHashMap<>();
+    private static final int MAX_CAPACITY = 5000;
 
     public static class FeedbackLimitResult {
         private final boolean blocked;
@@ -91,20 +92,7 @@ public class FeedbackRateLimiterService {
             }
         }
 
-        // 2. Table Cooldown Window (prevents rapid automated bursts targeting the same table)
-        if (tableId != null) {
-            Instant lastTableTime = tableLastSubmission.get(tableId);
-            if (lastTableTime != null) {
-                long elapsed = Duration.between(lastTableTime, now).getSeconds();
-                if (elapsed < tableCooldownSeconds) {
-                    long remaining = tableCooldownSeconds - elapsed;
-                    log.warn("Feedback flooding: Table {} submission within cooldown ({}s < {}s)", tableId, elapsed, tableCooldownSeconds);
-                    return new FeedbackLimitResult(true, "Feedback was recently submitted for this table. Please wait a moment.", remaining);
-                }
-            }
-        }
-
-        // 3. Duplicate Submission Detection
+        // 2. Duplicate Submission Detection (checked before table cooldown so identical feedback gets explicit duplicate notification)
         String fingerprint = generateFingerprint(clientIp, tableId, rating, cleanComment);
         Instant lastDupTime = duplicateFingerprints.get(fingerprint);
         if (lastDupTime != null) {
@@ -118,21 +106,45 @@ public class FeedbackRateLimiterService {
             }
         }
 
+        // 3. Client-Table Cooldown Window (prevents rapid automated bursts from the same client targeting this table)
+        String clientTableKey = generateClientTableKey(clientIp, tableId);
+        Instant lastTableTime = clientTableCooldown.get(clientTableKey);
+        if (lastTableTime != null) {
+            long elapsed = Duration.between(lastTableTime, now).getSeconds();
+            if (elapsed < tableCooldownSeconds) {
+                long remaining = tableCooldownSeconds - elapsed;
+                log.warn("Feedback flooding: Client {} table {} submission within cooldown ({}s < {}s)", clientIp, tableId, elapsed, tableCooldownSeconds);
+                return new FeedbackLimitResult(true, "Feedback was recently submitted from your device for this table. Please wait a moment.", remaining);
+            }
+        }
+
         return new FeedbackLimitResult(false, null, 0);
     }
 
     public void recordSubmission(String clientIp, Long tableId, Integer rating, String cleanComment) {
         Instant now = Instant.now();
+        Instant cutoff = now.minusSeconds(ipWindowSeconds);
         if (clientIp != null && !clientIp.isBlank()) {
-            ipHistory.computeIfAbsent(clientIp, k -> new ConcurrentLinkedDeque<>()).addLast(now);
+            ipHistory.compute(clientIp, (k, deque) -> {
+                if (deque == null) deque = new ConcurrentLinkedDeque<>();
+                while (!deque.isEmpty() && deque.peekFirst().isBefore(cutoff)) {
+                    deque.pollFirst();
+                }
+                deque.addLast(now);
+                return deque;
+            });
         }
-        if (tableId != null) {
-            tableLastSubmission.put(tableId, now);
-        }
+        String clientTableKey = generateClientTableKey(clientIp, tableId);
+        clientTableCooldown.put(clientTableKey, now);
+
         String fingerprint = generateFingerprint(clientIp, tableId, rating, cleanComment);
         duplicateFingerprints.put(fingerprint, now);
 
         cleanOldEntries();
+    }
+
+    private String generateClientTableKey(String clientIp, Long tableId) {
+        return (clientIp != null && !clientIp.isBlank() ? clientIp.trim() : "unknown") + ":" + (tableId != null ? tableId : 0L);
     }
 
     private String generateFingerprint(String clientIp, Long tableId, Integer rating, String cleanComment) {
@@ -143,7 +155,7 @@ public class FeedbackRateLimiterService {
     }
 
     private void cleanOldEntries() {
-        if (ipHistory.size() > 5000 || duplicateFingerprints.size() > 5000 || tableLastSubmission.size() > 2000) {
+        if (ipHistory.size() > MAX_CAPACITY || duplicateFingerprints.size() > MAX_CAPACITY || clientTableCooldown.size() > MAX_CAPACITY) {
             Instant now = Instant.now();
             Instant ipCutoff = now.minusSeconds(ipWindowSeconds);
             ipHistory.entrySet().removeIf(e -> {
@@ -157,7 +169,21 @@ public class FeedbackRateLimiterService {
             duplicateFingerprints.entrySet().removeIf(e -> e.getValue().isBefore(dupCutoff));
 
             Instant tableCutoff = now.minusSeconds(tableCooldownSeconds * 2);
-            tableLastSubmission.entrySet().removeIf(e -> e.getValue().isBefore(tableCutoff));
+            clientTableCooldown.entrySet().removeIf(e -> e.getValue().isBefore(tableCutoff));
+
+            // Hard memory bounding if still above MAX_CAPACITY:
+            while (duplicateFingerprints.size() > MAX_CAPACITY) {
+                var it = duplicateFingerprints.keySet().iterator();
+                if (it.hasNext()) { it.next(); it.remove(); } else { break; }
+            }
+            while (clientTableCooldown.size() > MAX_CAPACITY) {
+                var it = clientTableCooldown.keySet().iterator();
+                if (it.hasNext()) { it.next(); it.remove(); } else { break; }
+            }
+            while (ipHistory.size() > MAX_CAPACITY) {
+                var it = ipHistory.keySet().iterator();
+                if (it.hasNext()) { it.next(); it.remove(); } else { break; }
+            }
         }
     }
 
@@ -167,8 +193,20 @@ public class FeedbackRateLimiterService {
 
     public void clear() {
         ipHistory.clear();
-        tableLastSubmission.clear();
+        clientTableCooldown.clear();
         duplicateFingerprints.clear();
+    }
+
+    public int getIpHistorySize() {
+        return ipHistory.size();
+    }
+
+    public int getClientTableCooldownSize() {
+        return clientTableCooldown.size();
+    }
+
+    public int getDuplicateFingerprintsSize() {
+        return duplicateFingerprints.size();
     }
 
     public void setMaxPerIpWindow(int maxPerIpWindow) {
