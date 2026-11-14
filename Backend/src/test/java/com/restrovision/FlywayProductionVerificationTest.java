@@ -32,13 +32,13 @@ public class FlywayProductionVerificationTest {
         int applied = flyway.migrate().migrationsExecuted;
         System.out.println("[Flyway Scenario 1] Migrations executed on empty DB: " + applied);
 
-        // Verify V1 was executed
+        // Verify V1 and V2 were executed
         MigrationInfo current = flyway.info().current();
         System.out.println("[Flyway Scenario 1] Current version: " + current.getVersion().getVersion());
         System.out.println("[Flyway Scenario 1] Current state: " + current.getState());
         
-        assertThat(applied).isEqualTo(1);
-        assertThat(current.getVersion().getVersion()).isEqualTo("1");
+        assertThat(applied).isEqualTo(2);
+        assertThat(current.getVersion().getVersion()).isEqualTo("2");
         assertThat(current.getState().name()).isEqualTo("SUCCESS");
 
         // Verify tables exist
@@ -86,12 +86,15 @@ public class FlywayProductionVerificationTest {
     void testBaselineVersionOneOnPreExistingSchemaPreservesData() throws Exception {
         String jdbcUrl = "jdbc:h2:mem:flyway_existing_db_v1;MODE=Oracle;DB_CLOSE_DELAY=-1";
 
-        // Pre-create tables and populate existing production records
+        // Pre-create tables representing pre-existing V1 schema and populate existing production records
         try (Connection conn = DriverManager.getConnection(jdbcUrl, "sa", "");
              Statement stmt = conn.createStatement()) {
             stmt.execute("CREATE TABLE restaurants (restaurant_id NUMBER PRIMARY KEY, name VARCHAR2(100), timezone VARCHAR2(64), status VARCHAR2(20), created_at TIMESTAMP)");
+            stmt.execute("CREATE TABLE table_sessions (session_id NUMBER PRIMARY KEY, restaurant_id NUMBER, table_id NUMBER, status VARCHAR2(20))");
+            stmt.execute("CREATE TABLE staff_tasks (task_id NUMBER PRIMARY KEY, restaurant_id NUMBER, task_type VARCHAR2(30), status VARCHAR2(20))");
+            stmt.execute("CREATE TABLE service_requests (service_request_id NUMBER PRIMARY KEY, restaurant_id NUMBER, table_id NUMBER, request_type VARCHAR2(30), status VARCHAR2(20))");
             stmt.execute("INSERT INTO restaurants (restaurant_id, name, timezone, status, created_at) VALUES (42, 'Existing Enterprise Branch', 'Asia/Kolkata', 'ACTIVE', CURRENT_TIMESTAMP)");
-            System.out.println("[Flyway Scenario 2B] Existing database initialized with restaurant ID 42.");
+            System.out.println("[Flyway Scenario 2B] Existing database initialized with baseline V1 schema and restaurant ID 42.");
         }
 
         // Configure Flyway with baseline-version: 1
@@ -110,9 +113,9 @@ public class FlywayProductionVerificationTest {
         System.out.println("[Flyway Scenario 2B] Current version: " + current.getVersion().getVersion());
         System.out.println("[Flyway Scenario 2B] Migration type: " + current.getType());
 
-        assertThat(applied).isEqualTo(0); // V1 was NOT re-run
-        assertThat(current.getVersion().getVersion()).isEqualTo("1");
-        assertThat(current.getType().name()).isEqualTo("BASELINE");
+        assertThat(applied).isEqualTo(1); // V1 was baselined (not re-run); V2 (optimistic locking) was cleanly applied
+        assertThat(current.getVersion().getVersion()).isEqualTo("2");
+        assertThat(current.getState().name()).isEqualTo("SUCCESS");
 
         // Verify existing application records remain completely unchanged
         try (Connection conn = DriverManager.getConnection(jdbcUrl, "sa", "");
@@ -121,6 +124,14 @@ public class FlywayProductionVerificationTest {
             assertThat(rs.next()).isTrue();
             assertThat(rs.getString("name")).isEqualTo("Existing Enterprise Branch");
             System.out.println("[Flyway Scenario 2B] Verified: Pre-existing record ID 42 is intact and unmodified!");
+        }
+
+        // Verify V2 added the version column to table_sessions
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, "sa", "");
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT version FROM table_sessions WHERE 1=0")) {
+            assertThat(rs.getMetaData().getColumnCount()).isEqualTo(1);
+            System.out.println("[Flyway Scenario 2B] Verified: Table 'table_sessions' successfully upgraded with 'version' column.");
         }
     }
 }

@@ -798,10 +798,12 @@ class RestrovisionApplicationTests {
         String edgeToken = getValidEdgeToken();
         String eventId = UUID.randomUUID().toString();
 
-        // 1. Reset Table 1 to AVAILABLE with no active sessions or alerts
+        // 1. Reset Table 1 to AVAILABLE with no active sessions, alerts, or staff lock
         RestaurantTable table1 = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
         table1.setStatus("AVAILABLE");
         table1.setCurrentSessionId(null);
+        table1.setStatusSource("SYSTEM");
+        table1.setStatusChangedAt(Instant.now().minusSeconds(300));
         tableRepository.save(table1);
 
         sessionRepository.findByRestaurantIdAndTableIdOrderBySeatedAtDesc(1L, 1L).forEach(s -> {
@@ -1072,6 +1074,7 @@ class RestrovisionApplicationTests {
         assertThat(requestsAfterAckRetry.get(0).getStatus()).isEqualTo("ACKNOWLEDGED");
 
         // 3. Scenario B: Staff COMPLETED the request. Client retries event.
+        sr = serviceRequestRepository.findById(srId).orElseThrow();
         sr.setStatus("COMPLETED");
         sr.setCompletedAt(Instant.now());
         serviceRequestRepository.save(sr);
@@ -1095,6 +1098,7 @@ class RestrovisionApplicationTests {
         assertThat(requestsAfterCompRetry.get(0).getStatus()).isEqualTo("COMPLETED");
 
         // 4. Scenario C: Staff DISMISSED the request. Client retries event.
+        sr = serviceRequestRepository.findById(srId).orElseThrow();
         sr.setStatus("DISMISSED");
         serviceRequestRepository.save(sr);
 
@@ -1501,12 +1505,20 @@ class RestrovisionApplicationTests {
         // 1. Initial active session on Table 1 is Session 1
         RestaurantTable t1 = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
         Long originalSessionId = t1.getCurrentSessionId();
+        if (originalSessionId == null) {
+            TableSession initialSession = new TableSession(1L, 1L, "SYSTEM", 2);
+            initialSession = sessionRepository.save(initialSession);
+            t1.setCurrentSessionId(initialSession.getSessionId());
+            t1.setStatus("OCCUPIED");
+            t1 = tableRepository.save(t1);
+            originalSessionId = initialSession.getSessionId();
+        }
 
         // Create a new session for Table 1 (Session 2 starts)
         TableSession newSession = new TableSession(1L, 1L, "SYSTEM", 4);
         newSession = sessionRepository.save(newSession);
         t1.setCurrentSessionId(newSession.getSessionId());
-        tableRepository.save(t1);
+        t1 = tableRepository.save(t1);
 
         TableSession otherTableSession = null;
         try {
@@ -2233,7 +2245,7 @@ class RestrovisionApplicationTests {
     void flywayMigrationBaseline() {
         if (flyway != null) {
             assertThat(flyway.info().current()).isNotNull();
-            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("1");
+            assertThat(flyway.info().current().getVersion().getVersion()).isEqualTo("2");
         }
     }
 
