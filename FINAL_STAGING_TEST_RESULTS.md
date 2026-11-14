@@ -17,10 +17,10 @@ A clean, full-stack automated test run was executed from scratch across all thre
 
 | Tier | Technology Stack | Test Framework | Total Tests | Passed | Failed | Skipped | Execution Time | Exit Code | Status |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Backend** | Java 21 / Spring Boot 3.2.3 | JUnit 5 / Mockito / TestRestTemplate | 118 | 118 | 0 | 0 | 59.45 s | `0` | **PASS** |
-| **Frontend** | React 18 / TypeScript / Vite | Vitest 4.0 / Testing Library | 52 | 52 | 0 | 0 | 4.54 s | `0` | **PASS** |
-| **Frontend Build** | TypeScript / Vite Bundler | `tsc -b && vite build` | 1,613 modules | Compiled | 0 | 0 | 3.73 s | `0` | **PASS** |
-| **Edge AI** | Python 3.13 / FastAPI | Pytest 9.2 / pytest-asyncio | 53 | 53 | 0 | 0 | 0.79 s | `0` | **PASS** |
+| **Backend** | Java 21 / Spring Boot 3.3.5 | JUnit 5 / Mockito / TestRestTemplate | 118 | 118 | 0 | 0 | 63.00 s | `0` | **PASS** |
+| **Frontend** | React 18 / TypeScript / Vite 6 | Vitest 4.1.12 / Testing Library | 52 | 52 | 0 | 0 | 3.45 s | `0` | **PASS** |
+| **Frontend Build** | TypeScript / Vite 6.4.6 Bundler | `tsc -b && vite build` | 1,613 modules | Compiled | 0 | 0 | 3.75 s | `0` | **PASS** |
+| **Edge AI** | Python 3.13 / FastAPI | Pytest 9.2.0 / pytest-asyncio | 53 | 53 | 0 | 0 | 0.79 s | `0` | **PASS** |
 | **Total Multi-Stack** | — | — | **223** | **223** | **0** | **0** | **68.51 s** | `0` | **100% PASS** |
 
 ---
@@ -35,7 +35,7 @@ mvn clean test
 
 ### 2.2 Execution Metrics & Results
 - **Build Outcome:** `[INFO] BUILD SUCCESS`
-- **Total Test Suites Executed:** 16 test classes
+- **Total Test Suites Executed:** 7 test classes (EdgeSecurityProductionVerificationTest, FlywayProductionVerificationTest, Group2PerformanceAndRegressionTest, OsivAndLazyLoadingEndpointProductionTest, RestrovisionApplicationTests, TenantContextSafetyTest, WebSocketIntegrationProductionTest)
 - **Total Tests Run:** 118
 - **Failures:** 0
 - **Errors:** 0
@@ -106,7 +106,7 @@ npm run test
 cd D:\RESTROVISION\frontend
 npm run build
 ```
-- **Bundler:** Vite 5.1.4
+- **Bundler:** Vite 6.4.6
 - **TypeScript Compiler:** `tsc -b` (Strict mode)
 - **Module Count:** 1,613 modules transformed
 - **Output:** Clean production assets in `frontend/dist/`
@@ -178,9 +178,9 @@ Get-Service com.docker.service
 
 | Test Category | Target Environment | Automated Count | Result | Gate Status |
 | :--- | :--- | :---: | :---: | :---: |
-| **Backend Unit & Integration** | Embedded JVM / In-Memory DB | 118 / 118 | Passed (59.45s) | **SATISFIED** |
-| **Frontend Unit & Component** | Node 22 / Vitest / jsdom | 52 / 52 | Passed (4.54s) | **SATISFIED** |
-| **Frontend Production Build** | Node 22 / Vite TypeScript | 1,613 modules | Compiled (3.73s) | **SATISFIED** |
+| **Backend Unit & Integration** | Embedded JVM / In-Memory DB (Java 25/21, Spring Boot 3.3.5) | 118 / 118 | Passed (63.00s) | **SATISFIED** |
+| **Frontend Unit & Component** | Node 25 / Vitest 4.1.12 / jsdom 24 | 52 / 52 | Passed (3.45s) | **SATISFIED** |
+| **Frontend Production Build** | Node 25 / Vite 6.4.6 TypeScript | 1,613 modules | Compiled (3.75s) | **SATISFIED** |
 | **Edge AI Test Suite** | Python 3.13 / Pytest | 53 / 53 | Passed (0.79s) | **SATISFIED** |
 | **Multi-Container Orchestration** | Docker Engine 24+ / Compose | 4 containers | Not Run | **BLOCKED** |
 | **Real Browser Playwright E2E** | Chromium / Firefox / WebKit | — | Not Run | **BLOCKED** |

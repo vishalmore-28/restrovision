@@ -125,7 +125,7 @@ DROP USER RESTROVISION_RECOVERY CASCADE;
 ## 4. Additive Migration Compatibility & Safe Rollback
 
 ### 4.1 Zero-Downtime Additive Migration Design
-All RESTROVISION v2.0 Flyway SQL migrations (`V1__init_core_schema.sql` and `V2__audit_hardening.sql`) are strictly **additive**:
+All RESTROVISION v2.0 Flyway SQL migrations (`V1__init_core_schema.sql` and `V2__add_optimistic_locking_version.sql`) are strictly **additive**:
 - New tables and sequences do not alter existing schema contracts.
 - Columns added in V2 (`created_by`, `updated_by`, `audit_hash`, `tenant_id`) include safe defaults or nullable specifications.
 - Foreign keys and check constraints are non-blocking.

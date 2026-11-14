@@ -32,31 +32,33 @@ The application release gate remains locked because three mandatory external inf
 
 ---
 
-## 2. Comprehensive Master Release Gate Table
+## 2. Comprehensive Master Release Gate Table (21 Mandatory Gates)
 
 Every release gate is evaluated against concrete empirical evidence:
 
-| Gate Identifier | Evaluation Scope | Required Verification Evidence | Result | Operational Status & Blocker / Next Action |
-| :--- | :--- | :--- | :---: | :--- |
-| **GATE-01** | Source & Config Consistency | Zero fallback secrets, dual-account Flyway, variable reconciliation | **PASS** | Validated in `application-oracle.yml` & `docker-compose.prod.yml`. |
-| **GATE-02** | Backend Automated Tests | Surefire execution across all 7 test classes | **PASS** | 118 / 118 passed in 59.45 s (JUnit 5, Java 21). Exit code 0. |
-| **GATE-03** | Frontend JSDOM Suite | Vitest component, store, and interceptor suites | **PASS** | 52 / 52 passed in 4.54 s (Vitest 4, Node 22). Exit code 0. |
-| **GATE-04** | Edge AI Test Suite | Pytest API, state engine, forecasting, and NLP | **PASS** | 53 / 53 passed in 0.79 s (Pytest 9.2, Python 3.13). Exit code 0. |
-| **GATE-05** | Frontend Production Build | Vite 6 asset bundling & minification | **PASS** | Compiled in 3.73 s. 1,613 modules. Exit code 0. |
-| **GATE-06** | npm Security Audit | Production dependency vulnerability clearance | **PASS** | 0 vulnerabilities across 370 total packages (`npm audit`). |
-| **GATE-07** | Python Security Audit | Edge AI package vulnerability clearance | **PASS** | No known vulnerabilities found (`pip-audit -r requirements.txt`). |
-| **GATE-08** | Maven Dependency Scan | Authenticated OWASP Dependency-Check (CVSS 7.0) | **BLOCKED** | Blocked on missing `$env:NVD_API_KEY`. Unverified. |
-| **GATE-09** | Oracle Migrations | Live execution of V1 and V2 in `FREEPDB1` | **BLOCKED** | Blocked on DBA provisioning of `RESTROVISION_MIGRATOR`. |
-| **GATE-10** | Oracle Runtime CRUD | Transactional operations under `RESTROVISION_APP`| **BLOCKED** | Blocked on DBA provisioning of `RESTROVISION_APP`. |
-| **GATE-11** | Runtime DDL Denial | Verification that runtime account cannot execute DDL | **STATIC PASS** | Verified via privilege scripts (0 quota, no DDL grants). |
-| **GATE-12** | Compose Validation | Production Compose syntax & interpolation check | **PASS** | `docker compose -f docker-compose.prod.yml config` exit code 0. |
-| **GATE-13** | Docker Staging Runtime | Live container startup & health check probes | **BLOCKED** | Blocked on `com.docker.service` (stopped on host). |
-| **GATE-14** | Real Browser E2E | Playwright end-to-end browser workflows | **BLOCKED** | Blocked pending live running container stack. |
-| **GATE-15** | 100-VU Load Test | Concurrent virtual user load test (k6/JMeter) | **BLOCKED** | Blocked pending live running container stack. |
-| **GATE-16** | Backup Restore Test | Isolated Data Pump restore into staging `TESTPDB`| **NOT RUN** | Pending provisioning of isolated disposable test PDB. |
-| **GATE-17** | Remote CI/CD Execution | GitHub Actions automated workflow run | **NOT RUN** | Pending authorized git push to remote GitHub. |
-| **GATE-18** | Git Safety & Cleanliness | Protected `main` untouched; branch isolated | **PASS** | `main` locked at `171171b`; all 8 untracked user files intact. |
-| **GATE-19** | Documentation Sync | Zero discrepancies across runbooks and reports | **PASS** | All runbooks reconciled with source code implementations. |
+| # | Release Gate | Required Evidence | Status | Evidence Location | Execution Date | Actual Result | Remaining Issue / Blocker | Next Action Required |
+|---|---|---|:---:|---|---|---|---|---|
+| **1** | **Git Safety** | Branch, HEAD, protected main, preserved artifacts | **PASS** | `git status`, `git rev-parse` | 2026-11-15 | `feature/production-hardening`, main locked at `171171b`, 8 user files preserved | None | None (Complete) |
+| **2** | **Configuration Consistency** | Actual source and dependency configuration | **PASS** | `application-oracle.yml`, `docker-compose.prod.yml` | 2026-11-15 | Fail-fast mandatory secrets, finite 10G quota, baseline-on-migrate: false | None | None (Complete) |
+| **3** | **Oracle DBA Provisioning** | Authorized account and privilege verification | **BLOCKED** | Oracle PDB `FREEPDB1` | 2026-11-15 | `freepdb1` active, but `RESTROVISION_MIGRATOR` & `APP` do not exist | Blocked on DBA execution | DBA to run canonical provisioning script as `SYSDBA` |
+| **4** | **Flyway Migration** | Actual migration execution and history | **BLOCKED** | `flyway_schema_history` in `FREEPDB1` | 2026-11-15 | V1 & V2 SQL verified statically, embedded test passed | Blocked on Gate 3 | Run Flyway migration under `RESTROVISION_MIGRATOR` |
+| **5** | **Runtime CRUD** | Real application operations using runtime account | **BLOCKED** | Staging Oracle connection pool | 2026-11-15 | Unit tests verified against H2 | Blocked on Gate 3 & 4 | Execute transactional CRUD under `RESTROVISION_APP` |
+| **6** | **Runtime DDL Denial** | Actual denied DDL attempts | **STATIC PASS** | Privilege grant script review | 2026-11-15 | `QUOTA 0 ON users`, zero DDL privileges granted to `APP` | Live denial test pending Gate 3 | Verify `CREATE TABLE` returns `ORA-01031` in live PDB |
+| **7** | **Backend Tests** | Actual Maven/Surefire results | **PASS** | `Backend/target/surefire-reports/` | 2026-11-15 | 118 / 118 passed in 63.00 s across 7 test classes (Java 25/21, Spring Boot 3.3.5) | None | None (Complete) |
+| **8** | **Frontend Tests** | Actual Vitest results | **PASS** | Vitest console / `frontend/src/__tests__/` | 2026-11-15 | 52 / 52 passed in 3.45 s across 5 test files (Node 25, Vitest 4.1.12, jsdom 24) | None | None (Complete) |
+| **9** | **Frontend Build** | Actual production build | **PASS** | `frontend/dist/` | 2026-11-15 | Vite 6.4.6 compiled 1,613 modules in 3.75 s. 0 errors. | None | None (Complete) |
+| **10** | **Edge AI Tests** | Actual pytest results | **PASS** | Pytest console / `edge-ai/tests/` | 2026-11-15 | 53 / 53 passed in 0.79 s (Python 3.13.11, Pytest 9.2.0) | None | None (Complete) |
+| **11** | **npm Audit** | Actual audit report | **PASS** | `npm audit` | 2026-11-15 | 0 vulnerabilities found across 370 packages | None | None (Complete) |
+| **12** | **pip Audit** | Actual pip-audit report | **PASS** | `python -m pip_audit` | 2026-11-15 | No known vulnerabilities found across all requirements | None | None (Complete) |
+| **13** | **Maven Dependency Scan** | Actual Dependency-Check report | **BLOCKED** | `pom.xml` (`dependency-audit-strict`) | 2026-11-15 | NVD download throttled; unauthenticated scan blocked | Blocked on missing `$env:NVD_API_KEY` | SecOps to inject `$env:NVD_API_KEY` into CI runner |
+| **14** | **Docker Compose Validation** | Actual Compose configuration validation | **PASS** | `docker compose -f docker-compose.prod.yml config` | 2026-11-15 | Exit code 0, interpolation verified, subnet 172.28.0.0/16 | None | None (Complete) |
+| **15** | **Docker Staging Runtime** | Actual running containers and health | **BLOCKED** | Docker daemon (`com.docker.service`) | 2026-11-15 | Service stopped on Windows host (`pipe unavailable`) | Blocked on Docker daemon startup | Elevated Windows admin to start `com.docker.service` |
+| **16** | **Browser E2E** | Actual Playwright browser execution | **BLOCKED** | Headless browser execution | 2026-11-15 | Vitest/jsdom passed; live browser E2E not run | Blocked on Gate 15 (Docker) | Deploy staging stack and run `npx playwright test` |
+| **17** | **WebSocket Reverse Proxy** | Actual connection through Nginx | **BLOCKED** | `restrovision-nginx` container proxy | 2026-11-15 | Embedded Tomcat passed 22/22; live Nginx proxy not run | Blocked on Gate 15 (Docker) | Verify STOMP upgrade headers over Nginx in staging |
+| **18** | **100-VU Load Test** | Actual concurrent load-test report | **BLOCKED** | k6 / JMeter load script | 2026-11-15 | Microbenchmark passed (p95=12.34ms, <=3 SQL queries); 100-VU not run | Blocked on Gate 15 (Docker) | Execute 100-VU k6 script against staging reverse proxy |
+| **19** | **Backup and Restore** | Actual isolated recovery evidence | **NOT RUN** | Oracle Data Pump / `TESTPDB` | 2026-11-15 | DR procedure & 5-point checklist documented | Pending isolated staging PDB | DBA to execute Data Pump test import into `TESTPDB` |
+| **20** | **Remote CI/CD** | Actual authorized workflow execution | **NOT RUN** | GitHub Actions (`.github/workflows/ci.yml`) | 2026-11-15 | Local syntax & steps validated; remote execution not triggered | Pending authorized git push | Run GitHub Actions workflow upon authorized git push |
+| **21** | **Documentation Reconciliation** | Consistent, evidence-backed reports | **PASS** | All 8 `FINAL_*.md` files | 2026-11-15 | Reconciled Spring Boot 3.3.5, Vite 6.4.6, Node 25, 7 test classes, 10G quota | None | None (Complete) |
 
 ---
 

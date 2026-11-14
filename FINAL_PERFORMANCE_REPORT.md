@@ -77,7 +77,7 @@ The automated test suite enforces this constraint via query-counting Hibernate i
 ## 3. In-Memory Sequential Latency Microbenchmarking
 
 ### 3.1 Benchmark Configuration
-- **Runtime:** OpenJDK 64-Bit Server VM 21.0.6 (Spring Boot 3.2.3 embedded context)
+- **Runtime:** OpenJDK 64-Bit Server VM 25.0.4.1 (targeting Java 21 bytecode, Spring Boot 3.3.5 embedded context)
 - **Target Endpoint:** `TableViewService.getTableView()` with simulated 50-table state
 - **Sample Size:** 100 sequential iterations (following 20 warm-up runs)
 - **Host CPU:** AMD Ryzen / Intel Core x86_64, Windows 11
