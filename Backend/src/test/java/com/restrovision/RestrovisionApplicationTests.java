@@ -23,6 +23,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
@@ -2329,7 +2330,7 @@ class RestrovisionApplicationTests {
         // Tenant 1 session
         StompHeaderAccessor t1Session = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
         t1Session.setDestination("/topic/restaurants/1/tables");
-        t1Session.setUser(new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, Collections.emptyList()));
+        t1Session.setUser(new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, List.of(new SimpleGrantedAuthority("ROLE_WAITER"))));
         t1Session.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 1L)));
         Message<?> t1ValidMsg = MessageBuilder.createMessage(new byte[0], t1Session.getMessageHeaders());
 
@@ -2340,7 +2341,7 @@ class RestrovisionApplicationTests {
         // Cross-tenant attempt: Tenant 1 session subscribing to Restaurant 2 is denied
         StompHeaderAccessor t1Cross = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
         t1Cross.setDestination("/topic/restaurants/2/tables");
-        t1Cross.setUser(new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, Collections.emptyList()));
+        t1Cross.setUser(new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, List.of(new SimpleGrantedAuthority("ROLE_WAITER"))));
         t1Cross.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 1L)));
         Message<?> t1CrossMsg = MessageBuilder.createMessage(new byte[0], t1Cross.getMessageHeaders());
 
@@ -2351,7 +2352,7 @@ class RestrovisionApplicationTests {
         // Tenant 2 session
         StompHeaderAccessor t2Session = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
         t2Session.setDestination("/topic/restaurants/2/tables");
-        t2Session.setUser(new UsernamePasswordAuthenticationToken("user2@restaurant2.com", null, Collections.emptyList()));
+        t2Session.setUser(new UsernamePasswordAuthenticationToken("user2@restaurant2.com", null, List.of(new SimpleGrantedAuthority("ROLE_WAITER"))));
         t2Session.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 2L)));
         Message<?> t2ValidMsg = MessageBuilder.createMessage(new byte[0], t2Session.getMessageHeaders());
 
@@ -2362,7 +2363,7 @@ class RestrovisionApplicationTests {
         // Cross-tenant attempt: Tenant 2 session subscribing to Restaurant 1 is denied
         StompHeaderAccessor t2Cross = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
         t2Cross.setDestination("/topic/restaurants/1/tables");
-        t2Cross.setUser(new UsernamePasswordAuthenticationToken("user2@restaurant2.com", null, Collections.emptyList()));
+        t2Cross.setUser(new UsernamePasswordAuthenticationToken("user2@restaurant2.com", null, List.of(new SimpleGrantedAuthority("ROLE_WAITER"))));
         t2Cross.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 2L)));
         Message<?> t2CrossMsg = MessageBuilder.createMessage(new byte[0], t2Cross.getMessageHeaders());
 
@@ -2375,7 +2376,7 @@ class RestrovisionApplicationTests {
     @DisplayName("28: BUG-001: WebSocket SEND destination-level authorization enforced")
     void webSocketSendDestinationAuthorization() {
         // Authenticated Tenant 1 session
-        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, Collections.emptyList());
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, List.of(new SimpleGrantedAuthority("ROLE_OWNER")));
         Map<String, Object> sessionAttrs = new HashMap<>(Map.of("restaurantId", 1L));
 
         // 1. Authorized SEND to /app/restaurants/1/ping succeeds

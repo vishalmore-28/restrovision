@@ -1,5 +1,6 @@
 package com.restrovision;
 
+import com.restrovision.config.WebSocketConfig;
 import com.restrovision.security.JwtTokenProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -7,8 +8,12 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.converter.StringMessageConverter;
 import org.springframework.messaging.simp.stomp.*;
+import org.springframework.messaging.support.MessageBuilder;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.messaging.WebSocketStompClient;
 
@@ -17,6 +22,7 @@ import java.util.*;
 import java.util.concurrent.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public class WebSocketIntegrationProductionTest {
@@ -26,6 +32,9 @@ public class WebSocketIntegrationProductionTest {
 
     @Autowired
     private JwtTokenProvider tokenProvider;
+
+    @Autowired
+    private WebSocketConfig webSocketConfig;
 
     private WebSocketStompClient stompClient;
     private String wsUrl;
@@ -733,5 +742,125 @@ public class WebSocketIntegrationProductionTest {
         assertThat(session2.isConnected()).isTrue();
         System.out.println("[Live STOMP Test] Verified: CLEANING role subscribing to /tasks allowed and active.");
         session2.disconnect();
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Authenticated principal with empty authorities cannot subscribe")
+    void testLiveEmptyAuthoritiesPrincipalCannotSubscribe() throws Exception {
+        // Valid token signature & tenant, but empty role set
+        String emptyRoleToken = tokenProvider.generateAccessToken(1L, 1L, "emptyroles@restrovision.local", Set.of());
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + emptyRoleToken);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        session.subscribe("/topic/restaurants/1/tables", new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) { return String.class; }
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {}
+        });
+
+        Thread.sleep(400);
+        assertThat(session.isConnected()).isFalse();
+        System.out.println("[Live STOMP Test] Verified: User with empty authorities blocked from subscription, session terminated.");
+    }
+
+    @Test
+    @DisplayName("WebSocket Security Interceptor: Missing authentication or empty authorities are rejected")
+    void testMissingAuthenticationOrAuthoritiesRejectedByInterceptor() {
+        // 1. Missing authentication (null user)
+        StompHeaderAccessor nullUserAccessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        nullUserAccessor.setDestination("/topic/restaurants/1/tables");
+        nullUserAccessor.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 1L)));
+        nullUserAccessor.setUser(null);
+        Message<?> nullUserMsg = MessageBuilder.createMessage(new byte[0], nullUserAccessor.getMessageHeaders());
+
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(nullUserMsg, null)
+        );
+
+        // 2. Authenticated principal with empty authorities
+        StompHeaderAccessor emptyAuthAccessor = StompHeaderAccessor.create(StompCommand.SUBSCRIBE);
+        emptyAuthAccessor.setDestination("/topic/restaurants/1/tables");
+        emptyAuthAccessor.setSessionAttributes(new HashMap<>(Map.of("restaurantId", 1L)));
+        emptyAuthAccessor.setUser(new UsernamePasswordAuthenticationToken("user@restrovision.local", null, Collections.emptyList()));
+        Message<?> emptyAuthMsg = MessageBuilder.createMessage(new byte[0], emptyAuthAccessor.getMessageHeaders());
+
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(emptyAuthMsg, null)
+        );
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: All four legitimate topics (tables, orders, tasks, alerts) remain accessible to authorized roles")
+    void testAllFourLegitimateTopicsAccessibleToAuthorizedRoles() throws Exception {
+        // 1. tables accessible to WAITER
+        String waiterToken = tokenProvider.generateAccessToken(4L, 1L, "waiter@restrovision.local", Set.of("WAITER"));
+        StompSession waiterSession = connectWithToken(waiterToken);
+        waiterSession.subscribe("/topic/restaurants/1/tables", dummyHandler());
+        Thread.sleep(300);
+        assertThat(waiterSession.isConnected()).isTrue();
+        waiterSession.disconnect();
+
+        // 2. orders accessible to KITCHEN
+        String kitchenToken = tokenProvider.generateAccessToken(3L, 1L, "chef@restrovision.local", Set.of("KITCHEN"));
+        StompSession kitchenSession = connectWithToken(kitchenToken);
+        kitchenSession.subscribe("/topic/restaurants/1/orders", dummyHandler());
+        Thread.sleep(300);
+        assertThat(kitchenSession.isConnected()).isTrue();
+        kitchenSession.disconnect();
+
+        // 3. tasks accessible to CLEANING
+        String cleaningToken = tokenProvider.generateAccessToken(2L, 1L, "cleaner@restrovision.local", Set.of("CLEANING"));
+        StompSession cleaningSession = connectWithToken(cleaningToken);
+        cleaningSession.subscribe("/topic/restaurants/1/tasks", dummyHandler());
+        Thread.sleep(300);
+        assertThat(cleaningSession.isConnected()).isTrue();
+        cleaningSession.disconnect();
+
+        // 4. alerts accessible to OWNER
+        String ownerToken = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+        StompSession ownerSession = connectWithToken(ownerToken);
+        ownerSession.subscribe("/topic/restaurants/1/alerts", dummyHandler());
+        Thread.sleep(300);
+        assertThat(ownerSession.isConnected()).isTrue();
+        ownerSession.disconnect();
+
+        System.out.println("[Live STOMP Test] Verified: All four legitimate topics successfully subscribed by authorized roles.");
+    }
+
+    private StompSession connectWithToken(String token) throws Exception {
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + token);
+        CompletableFuture<StompSession> future = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                future.complete(session);
+            }
+        });
+        return future.get(5, TimeUnit.SECONDS);
+    }
+
+    private StompFrameHandler dummyHandler() {
+        return new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) { return String.class; }
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {}
+        };
     }
 }

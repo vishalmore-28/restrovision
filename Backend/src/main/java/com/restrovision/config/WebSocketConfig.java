@@ -178,9 +178,21 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                     log.info("WebSocket STOMP authenticated for {} (Restaurant ID: {})", claims.getSubject(), restaurantId);
 
                 } else if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-                    if (accessor.getUser() == null || accessor.getSessionAttributes() == null || accessor.getSessionAttributes().get("restaurantId") == null) {
+                    // 1. Require a valid authenticated principal
+                    if (accessor.getUser() == null || !(accessor.getUser() instanceof Authentication auth) || auth.getName() == null || auth.getName().trim().isEmpty()) {
                         log.warn("Blocked unauthenticated WebSocket subscription attempt to {}", accessor.getDestination());
-                        throw new AccessDeniedException("Access denied: Unauthenticated subscription attempt.");
+                        throw new AccessDeniedException("Access denied: Valid authenticated principal is required.");
+                    }
+
+                    if (accessor.getSessionAttributes() == null || accessor.getSessionAttributes().get("restaurantId") == null) {
+                        log.warn("Blocked subscription with missing tenant context: {}", accessor.getDestination());
+                        throw new AccessDeniedException("Access denied: Missing tenant context in session.");
+                    }
+
+                    // 2. Require at least one granted authority
+                    if (auth.getAuthorities() == null || auth.getAuthorities().isEmpty()) {
+                        log.warn("Blocked subscription: User {} has no granted authorities", auth.getName());
+                        throw new AccessDeniedException("Access denied: Authenticated principal has no granted authorities.");
                     }
 
                     String destination = accessor.getDestination();
@@ -210,6 +222,7 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                             throw new AccessDeniedException("Access denied: Cross-tenant subscription to restaurant " + targetRestId + " is prohibited.");
                         }
 
+                        // 3. Resolve the requested topic from the explicit allowlist
                         String subtopic = matcher.group(2);
                         Set<String> allowedRoles = TOPIC_ROLE_AUTHORIZATIONS.get(subtopic);
                         if (allowedRoles == null) {
@@ -217,17 +230,16 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                             throw new AccessDeniedException("Access denied: Destination '" + destination + "' is not a permitted application topic.");
                         }
 
-                        Authentication auth = (Authentication) accessor.getUser();
-                        if (auth != null && !auth.getAuthorities().isEmpty()) {
-                            boolean hasRole = auth.getAuthorities().stream()
-                                    .map(GrantedAuthority::getAuthority)
-                                    .anyMatch(allowedRoles::contains);
+                        // 4. Require an intersection between the principal's authorities and that topic's allowed roles
+                        boolean hasRole = auth.getAuthorities().stream()
+                                .map(GrantedAuthority::getAuthority)
+                                .anyMatch(allowedRoles::contains);
 
-                            if (!hasRole) {
-                                log.warn("Blocked subscription: User {} lacks required role for topic {}",
-                                        auth.getName(), destination);
-                                throw new AccessDeniedException("Access denied: User lacks authorized role for destination " + destination);
-                            }
+                        // 5. Reject the subscription if any check fails
+                        if (!hasRole) {
+                            log.warn("Blocked subscription: User {} lacks required role for topic {}",
+                                    auth.getName(), destination);
+                            throw new AccessDeniedException("Access denied: User lacks authorized role for destination " + destination);
                         }
                     } catch (NumberFormatException ex) {
                         throw new AccessDeniedException("Access denied: Malformed restaurant topic destination.");
