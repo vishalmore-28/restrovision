@@ -20,6 +20,16 @@ app = FastAPI(
     description="On-premises computer vision inference, state engine, SQLite outbox, and batch inference engine (§9)."
 )
 
+@app.on_event("startup")
+def validate_production_configuration():
+    if settings.ENVIRONMENT.lower() == "production":
+        if not settings.SERVICE_TOKEN or settings.SERVICE_TOKEN == "edge-token-pune-01":
+            logger.error("FATAL: Production mode requires a valid cryptographic SERVICE_TOKEN. Static fallback tokens are prohibited.")
+            raise RuntimeError("Production mode requires a valid cryptographic SERVICE_TOKEN")
+        if not settings.EDGE_NODE_ID or settings.EDGE_NODE_ID == "edge-pune-01":
+            logger.error("FATAL: Production mode requires an explicit EDGE_NODE_ID.")
+            raise RuntimeError("Production mode requires an explicit EDGE_NODE_ID")
+
 # In-memory camera state registry
 CAMERA_STATES = [
     {"cameraId": 1, "name": "CAM-01: Main Dining Area", "state": "CONNECTED", "fps": 2.0, "lastFrame": "2026-11-13T11:30:00Z"},

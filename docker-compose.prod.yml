@@ -7,7 +7,7 @@ services:
       - "8080"
     environment:
       - SPRING_PROFILES_ACTIVE=oracle
-      - ORACLE_HOST=${ORACLE_HOST:-oracle-db}
+      - ORACLE_HOST=${ORACLE_HOST:?ORACLE_HOST is required}
       - ORACLE_PORT=${ORACLE_PORT:-1521}
       - ORACLE_SERVICE=${ORACLE_SERVICE:-freepdb1}
       - ORACLE_APP_USERNAME=${ORACLE_APP_USERNAME:?ORACLE_APP_USERNAME is required}
@@ -17,7 +17,7 @@ services:
       - RESTROVISION_JWT_SECRET=${RESTROVISION_JWT_SECRET:?RESTROVISION_JWT_SECRET is required}
       - RESTROVISION_EDGE_HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
       - RESTROVISION_COOKIE_SECURE=true
-      - RESTROVISION_TRUSTED_PROXIES=${RESTROVISION_TRUSTED_PROXIES:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      - RESTROVISION_TRUSTED_PROXIES=${RESTROVISION_TRUSTED_PROXIES:-172.28.0.0/16,127.0.0.1}
     networks:
       - restrovision-network
     healthcheck:
@@ -54,9 +54,9 @@ services:
       - "8000"
     environment:
       - SPRING_BOOT_URL=${SPRING_BOOT_URL:-http://backend:8080}
-      - EDGE_NODE_ID=${EDGE_NODE_ID:-edge-pune-01}
-      - RESTAURANT_ID=${RESTAURANT_ID:-1}
-      - SERVICE_TOKEN=${SERVICE_TOKEN:-}
+      - EDGE_NODE_ID=${EDGE_NODE_ID:?EDGE_NODE_ID is required}
+      - RESTAURANT_ID=${RESTAURANT_ID:?RESTAURANT_ID is required}
+      - SERVICE_TOKEN=${SERVICE_TOKEN:?SERVICE_TOKEN (cryptographic edge device JWT) is required}
       - HMAC_SECRET=${RESTROVISION_EDGE_HMAC_SECRET:?RESTROVISION_EDGE_HMAC_SECRET is required}
     depends_on:
       backend:
@@ -73,3 +73,6 @@ services:
 networks:
   restrovision-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
