@@ -140,6 +140,46 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                         log.warn("Blocked unauthenticated WebSocket SEND attempt to {}", accessor.getDestination());
                         throw new AccessDeniedException("Access denied: Unauthenticated message dispatch.");
                     }
+
+                    String destination = accessor.getDestination();
+                    if (destination == null || destination.trim().isEmpty()) {
+                        log.warn("Blocked WebSocket SEND attempt with null or empty destination");
+                        throw new AccessDeniedException("Access denied: SEND destination cannot be null or empty.");
+                    }
+
+                    // Reject client-originated SEND operations to broker-managed /topic/** destinations
+                    if (destination.startsWith("/topic/") || destination.equals("/topic")) {
+                        log.warn("Blocked client-originated WebSocket SEND to broadcast topic: {}", destination);
+                        throw new AccessDeniedException("Access denied: Direct publishing to broadcast topics is prohibited.");
+                    }
+
+                    // Permit application messages through /app/** only
+                    if (!destination.startsWith("/app/") && !destination.equals("/app")) {
+                        log.warn("Blocked WebSocket SEND to unsupported destination: {}", destination);
+                        throw new AccessDeniedException("Access denied: Unsupported destination prefix for SEND. Must start with /app/.");
+                    }
+
+                    // Enforce tenant isolation on tenant-scoped destinations (/app/restaurants/{id}/**)
+                    Long clientRestId = (Long) accessor.getSessionAttributes().get("restaurantId");
+                    if (destination.startsWith("/app/restaurants/")) {
+                        String[] parts = destination.split("/");
+                        if (parts.length >= 4) {
+                            try {
+                                Long targetRestId = Long.parseLong(parts[3]);
+                                if (!clientRestId.equals(targetRestId)) {
+                                    log.warn("Blocked cross-tenant WebSocket SEND: client tenant {} attempted to send to {}",
+                                            clientRestId, destination);
+                                    throw new AccessDeniedException("Access denied: Cross-tenant message dispatch to restaurant " + targetRestId + " is prohibited.");
+                                }
+                            } catch (NumberFormatException ex) {
+                                log.warn("Blocked malformed tenant ID in WebSocket SEND destination: {}", destination);
+                                throw new AccessDeniedException("Access denied: Malformed restaurant ID in destination.");
+                            }
+                        } else {
+                            log.warn("Blocked malformed /app/restaurants/ path in WebSocket SEND: {}", destination);
+                            throw new AccessDeniedException("Access denied: Malformed tenant destination path.");
+                        }
+                    }
                 }
 
                 return message;

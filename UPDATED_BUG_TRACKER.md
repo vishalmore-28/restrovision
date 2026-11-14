@@ -25,7 +25,7 @@
 
 | Defect ID | Severity | Category | Component / File | Summary | Status | Resolution / Verification Reference |
 | :--- | :---: | :--- | :--- | :--- | :---: | :--- |
-| **BUG-001** | **CRITICAL** | Security | `WebSocketConfig.java` | Unauthenticated STOMP & cross-tenant subscription bypass | **RESOLVED & VERIFIED** | Implemented `ChannelInterceptor` in `WebSocketConfig.java` checking JWT on `CONNECT`, enforcing tenant match on `SUBSCRIBE` (`/topic/restaurants/{id}/**`), and checking auth on `SEND`. Tests 23–27 passing. *Sub-finding: Destination-level check on SEND verified missing; fix proposed.* |
+| **BUG-001** | **CRITICAL** | Security | `WebSocketConfig.java` | Unauthenticated STOMP & cross-tenant subscription bypass | **RESOLVED & VERIFIED** | Implemented `ChannelInterceptor` in `WebSocketConfig.java` checking JWT on `CONNECT`, enforcing tenant match on `SUBSCRIBE` (`/topic/restaurants/{id}/**`), and enforcing destination-level tenant authorization on `SEND` (rejecting `/topic/**` client publishes, enforcing tenant ID on `/app/restaurants/{id}/**`, and rejecting unsupported destinations). Tests 23–28 and 10 live STOMP tests passing. |
 | **BUG-002** | **CRITICAL** | Security | `JwtAuthFilter.java` | Static edge token & hardcoded tenant ID (`1L`) | **RESOLVED & VERIFIED** | Replaced static string with per-device JWT signed by backend. Device identity validated against DB, status checked (`ACTIVE`/`ONLINE`), and tenant strictly resolved from DB. Tests 04, 05, 16–20 passing. |
 | **BUG-003** | **CRITICAL** | DevOps | `Backend/Dockerfile` | Dockerfile missing from disk; compose build fails | **RESOLVED (RUNTIME PENDING)** | Created production multi-stage `Backend/Dockerfile` (`maven:3.9.9` -> `eclipse-temurin:21-jre-alpine`) with non-root user `appuser:appgroup` and Actuator health check probe. Runtime execution marked pending host privileges. |
 | **BUG-004** | **HIGH** | Multi-Tenancy| `TenantContext.java` | ThreadLocal defaults and resets to `1L` (Tenant bleed) | PENDING (Group 2) | Scope of Group 2 (ThreadLocal safety, event replay protection, N+1 query optimization). |
@@ -54,7 +54,7 @@
 ## 3. Detailed Verification Notes for Group 1 Resolutions
 
 ### BUG-001 (WebSocket STOMP Security & Tenant Isolation)
-- **Status**: **RESOLVED & VERIFIED (Destination SEND Fix Awaiting Approval)**
+- **Status**: **RESOLVED & VERIFIED**
 - **Verification Evidence**:
   - `webSocketAnonymousConnectRejected`: Anonymous STOMP `CONNECT` rejected with `AuthenticationCredentialsNotFoundException`.
   - `webSocketInvalidTokensRejected`: Rejects invalid signatures and refresh tokens with `BadCredentialsException`.
@@ -62,7 +62,7 @@
   - `webSocketUnauthenticatedOperationsRejected`: Enforces authentication on `SUBSCRIBE` and `SEND`.
   - `webSocketMultiTenantIsolation`: Rigorously tested with 2 distinct tenants (Restaurant 1 and Restaurant 2). Cross-tenant subscription attempts are blocked with `AccessDeniedException`.
   - Frontend client (`websocket.js`) transmits Bearer token in `connectHeaders` via `beforeConnect()`.
-  - **Empirical Check on SEND**: Verified that while authentication is enforced on SEND, destination-level inspection was omitted. Proposed fix documented and awaiting user approval.
+  - `webSocketSendDestinationAuthorization`: Destination-level tenant authorization strictly enforced on `SEND`. Rejects client SEND to broker topics (`/topic/**`), rejects cross-tenant `/app/restaurants/{id}/**` dispatches, and rejects unsupported/null destinations. Verified across 10 real TCP network STOMP socket tests.
 
 ### BUG-002 (Per-Device Edge Authentication & Strict Database Tenant Binding)
 - **Status**: **RESOLVED & VERIFIED**

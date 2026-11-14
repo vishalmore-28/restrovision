@@ -610,4 +610,61 @@ class RestrovisionApplicationTests {
                 webSocketConfig.createSecurityInterceptor().preSend(t2CrossMsg, null)
         );
     }
+
+    @Test
+    @DisplayName("28: BUG-001: WebSocket SEND destination-level authorization enforced")
+    void webSocketSendDestinationAuthorization() {
+        // Authenticated Tenant 1 session
+        UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken("user1@restaurant1.com", null, Collections.emptyList());
+        Map<String, Object> sessionAttrs = new HashMap<>(Map.of("restaurantId", 1L));
+
+        // 1. Authorized SEND to /app/restaurants/1/ping succeeds
+        StompHeaderAccessor validSend = StompHeaderAccessor.create(StompCommand.SEND);
+        validSend.setDestination("/app/restaurants/1/ping");
+        validSend.setUser(auth);
+        validSend.setSessionAttributes(sessionAttrs);
+        Message<?> validMsg = MessageBuilder.createMessage(new byte[0], validSend.getMessageHeaders());
+        Message<?> result = webSocketConfig.createSecurityInterceptor().preSend(validMsg, null);
+        assertThat(result).isNotNull();
+
+        // 2. Cross-tenant SEND to /app/restaurants/2/orders throws AccessDeniedException
+        StompHeaderAccessor crossSend = StompHeaderAccessor.create(StompCommand.SEND);
+        crossSend.setDestination("/app/restaurants/2/orders");
+        crossSend.setUser(auth);
+        crossSend.setSessionAttributes(sessionAttrs);
+        Message<?> crossMsg = MessageBuilder.createMessage(new byte[0], crossSend.getMessageHeaders());
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(crossMsg, null)
+        );
+
+        // 3. Direct client SEND to broker /topic/restaurants/1/tables throws AccessDeniedException
+        StompHeaderAccessor topicSend = StompHeaderAccessor.create(StompCommand.SEND);
+        topicSend.setDestination("/topic/restaurants/1/tables");
+        topicSend.setUser(auth);
+        topicSend.setSessionAttributes(sessionAttrs);
+        Message<?> topicMsg = MessageBuilder.createMessage(new byte[0], topicSend.getMessageHeaders());
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(topicMsg, null)
+        );
+
+        // 4. Client SEND to unsupported prefix throws AccessDeniedException
+        StompHeaderAccessor unsuppSend = StompHeaderAccessor.create(StompCommand.SEND);
+        unsuppSend.setDestination("/unsupported/custom");
+        unsuppSend.setUser(auth);
+        unsuppSend.setSessionAttributes(sessionAttrs);
+        Message<?> unsuppMsg = MessageBuilder.createMessage(new byte[0], unsuppSend.getMessageHeaders());
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(unsuppMsg, null)
+        );
+
+        // 5. Client SEND with null destination throws AccessDeniedException
+        StompHeaderAccessor nullSend = StompHeaderAccessor.create(StompCommand.SEND);
+        nullSend.setDestination(null);
+        nullSend.setUser(auth);
+        nullSend.setSessionAttributes(sessionAttrs);
+        Message<?> nullMsg = MessageBuilder.createMessage(new byte[0], nullSend.getMessageHeaders());
+        assertThrows(AccessDeniedException.class, () ->
+                webSocketConfig.createSecurityInterceptor().preSend(nullMsg, null)
+        );
+    }
 }

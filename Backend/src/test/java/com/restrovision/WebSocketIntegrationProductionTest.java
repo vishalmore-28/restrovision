@@ -199,9 +199,8 @@ public class WebSocketIntegrationProductionTest {
     }
 
     @Test
-    @DisplayName("WebSocket Live STOMP: Verify destination-level authorization on SEND operations")
-    void testDestinationAuthorizationOnSend() throws Exception {
-        // Authenticate as Tenant 1
+    @DisplayName("WebSocket Live STOMP: Tenant 1 sending to its authorized application destination succeeds")
+    void testTenant1SendingToAuthorizedAppDestination() throws Exception {
         String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
 
         StompHeaders connectHeaders = new StompHeaders();
@@ -219,11 +218,162 @@ public class WebSocketIntegrationProductionTest {
         StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
         assertThat(session.isConnected()).isTrue();
 
-        // Attempt SEND to foreign tenant topic
-        session.send("/topic/restaurants/2/tables", "spoofed payload");
+        // Send to authorized application destination for tenant 1
+        session.send("/app/restaurants/1/ping", "ping payload");
+        Thread.sleep(500);
+        assertThat(session.isConnected()).isTrue();
+        System.out.println("[Live STOMP Test] Verified: Tenant 1 sending to /app/restaurants/1/ping is permitted and session remains connected.");
+        session.disconnect();
+    }
 
+    @Test
+    @DisplayName("WebSocket Live STOMP: Tenant 1 attempting to send to Tenant 2 application destination is blocked")
+    void testTenant1SendingToForeignAppDestinationBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        // Attempt SEND to foreign tenant 2 application destination
+        session.send("/app/restaurants/2/orders", "cross-tenant payload");
         Thread.sleep(600);
-        System.out.println("[Live STOMP Test] Destination-level check on SEND - session isConnected: " + session.isConnected());
+        System.out.println("[Live STOMP Test] Verified: Cross-tenant SEND to /app/restaurants/2/orders blocked, session terminated: " + !session.isConnected());
+        assertThat(session.isConnected()).isFalse();
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Client attempting to publish directly to foreign broker topic /topic/restaurants/2/** is blocked")
+    void testTenant1PublishingDirectlyToForeignTopicBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        // Attempt direct publish to foreign broker topic
+        session.send("/topic/restaurants/2/tables", "spoofed payload");
+        Thread.sleep(600);
+        System.out.println("[Live STOMP Test] Verified: Direct publish to foreign /topic blocked, session terminated: " + !session.isConnected());
+        assertThat(session.isConnected()).isFalse();
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Client attempting to publish directly to own broker topic /topic/restaurants/1/** is blocked")
+    void testTenant1PublishingDirectlyToOwnTopicBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        // Attempt direct publish to own broker topic
+        session.send("/topic/restaurants/1/tables", "spoofed payload");
+        Thread.sleep(600);
+        System.out.println("[Live STOMP Test] Verified: Direct publish to own /topic blocked, session terminated: " + !session.isConnected());
+        assertThat(session.isConnected()).isFalse();
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Client attempting to send to unsupported destination is blocked")
+    void testUnsupportedDestinationBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        // Attempt SEND to unsupported destination prefix
+        session.send("/unsupported/custom/endpoint", "test payload");
+        Thread.sleep(600);
+        System.out.println("[Live STOMP Test] Verified: Unsupported destination SEND blocked, session terminated: " + !session.isConnected());
+        assertThat(session.isConnected()).isFalse();
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Legitimate frontend reactive UI subscription workflows preserved")
+    void testFrontendLegitimateSubscriptionWorkflows() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        // Subscribe to all 4 standard frontend topics from websocket.js
+        String[] topics = {
+                "/topic/restaurants/1/tables",
+                "/topic/restaurants/1/alerts",
+                "/topic/restaurants/1/orders",
+                "/topic/restaurants/1/tasks"
+        };
+
+        for (String topic : topics) {
+            session.subscribe(topic, new StompFrameHandler() {
+                @Override
+                public Type getPayloadType(StompHeaders headers) { return String.class; }
+                @Override
+                public void handleFrame(StompHeaders headers, Object payload) {}
+            });
+        }
+
+        Thread.sleep(500);
+        assertThat(session.isConnected()).isTrue();
+        System.out.println("[Live STOMP Test] Verified: All 4 frontend subscriptions active and healthy.");
         session.disconnect();
     }
 }
