@@ -3,7 +3,7 @@ spring:
     activate:
       on-profile: oracle
   datasource:
-    url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:ORCLPDB1}
+    url: jdbc:oracle:thin:@${ORACLE_HOST:localhost}:${ORACLE_PORT:1521}/${ORACLE_SERVICE:freepdb1}
     driver-class-name: oracle.jdbc.OracleDriver
     username: ${ORACLE_USERNAME:restrovision}
     password: ${ORACLE_PASSWORD:restrovision123}
