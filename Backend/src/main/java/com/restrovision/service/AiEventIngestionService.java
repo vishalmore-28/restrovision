@@ -55,7 +55,6 @@ public class AiEventIngestionService {
         this.notificationService = notificationService;
     }
 
-    @Transactional
     public Map<String, Object> ingestEvent(AiEventEnvelopeDto envelope) {
         Long restaurantId = envelope.getRestaurantId();
         if (restaurantId == null) {
@@ -66,23 +65,29 @@ public class AiEventIngestionService {
             throw new IllegalArgumentException("AI eventId must not be null or blank");
         }
 
+        Instant now = Instant.now();
         String cacheKey = restaurantId + ":" + eventId;
-        // 1. In-memory fast check for duplicate
-        if (recentEventCache.containsKey(cacheKey)) {
-            log.info("Duplicate event ignored via in-memory cache: {} for restaurant {}", eventId, restaurantId);
-            return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
+
+        // 1. In-memory fast check for duplicate with TTL expiration
+        Instant cachedTime = recentEventCache.get(cacheKey);
+        if (cachedTime != null) {
+            if (cachedTime.isAfter(now.minusSeconds(maxEventAgeSeconds))) {
+                log.info("Duplicate event ignored via in-memory cache: {} for restaurant {}", eventId, restaurantId);
+                return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
+            } else {
+                recentEventCache.remove(cacheKey);
+            }
         }
 
-        // 2. Persistent DB check for duplicate (survives backend restarts)
+        // 2. Persistent DB check for duplicate (authoritative source of truth, survives backend restarts)
         Optional<AiEvent> existing = aiEventRepository.findByRestaurantIdAndEventUid(restaurantId, eventId);
         if (existing.isPresent()) {
-            recentEventCache.put(cacheKey, Instant.now());
+            putInCache(cacheKey, now);
             log.info("Duplicate event ignored via DB record: {} for restaurant {}", eventId, restaurantId);
             return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
         }
 
         // 3. Prepare event entity
-        Instant now = Instant.now();
         Instant occurredAt = envelope.getOccurredAt() != null ? envelope.getOccurredAt() : now;
 
         AiEvent aiEvent = new AiEvent();
@@ -118,7 +123,7 @@ public class AiEventIngestionService {
             aiEvent.setProcessingStatus("REJECTED_CLOCK_SKEW");
             try {
                 aiEventRepository.saveAndFlush(aiEvent);
-                recentEventCache.put(cacheKey, now);
+                putInCache(cacheKey, now);
             } catch (DataIntegrityViolationException dive) {
                 log.info("Concurrent duplicate caught for future event {}: {}", eventId, dive.getMessage());
             }
@@ -132,7 +137,7 @@ public class AiEventIngestionService {
             aiEvent.setProcessingStatus("REJECTED_STALE");
             try {
                 aiEventRepository.saveAndFlush(aiEvent);
-                recentEventCache.put(cacheKey, now);
+                putInCache(cacheKey, now);
             } catch (DataIntegrityViolationException dive) {
                 log.info("Concurrent duplicate caught for stale event {}: {}", eventId, dive.getMessage());
             }
@@ -142,13 +147,9 @@ public class AiEventIngestionService {
         // 5. Atomic DB insert catching concurrent unique-key collisions
         try {
             aiEvent = aiEventRepository.saveAndFlush(aiEvent);
-            recentEventCache.put(cacheKey, now);
-            if (recentEventCache.size() > 5000) {
-                Instant cutoff = now.minusSeconds(maxEventAgeSeconds);
-                recentEventCache.entrySet().removeIf(entry -> entry.getValue().isBefore(cutoff));
-            }
+            putInCache(cacheKey, now);
         } catch (DataIntegrityViolationException ex) {
-            recentEventCache.put(cacheKey, now);
+            putInCache(cacheKey, now);
             log.info("Concurrent duplicate event caught via DB constraint: {} for restaurant {}", eventId, restaurantId);
             Map<String, Object> resp = new HashMap<>();
             resp.put("success", true);
@@ -285,5 +286,27 @@ public class AiEventIngestionService {
         resp.put("eventId", eventId);
         resp.put("status", "ACCEPTED");
         return resp;
+    }
+
+    private void putInCache(String cacheKey, Instant now) {
+        recentEventCache.put(cacheKey, now);
+        if (recentEventCache.size() > 5000) {
+            Instant cutoff = now.minusSeconds(maxEventAgeSeconds);
+            recentEventCache.entrySet().removeIf(entry -> entry.getValue().isBefore(cutoff));
+            if (recentEventCache.size() > 5000) {
+                recentEventCache.entrySet().stream()
+                        .sorted(Map.Entry.comparingByValue())
+                        .limit(recentEventCache.size() - 5000)
+                        .forEach(entry -> recentEventCache.remove(entry.getKey()));
+            }
+        }
+    }
+
+    public int getRecentEventCacheSize() {
+        return recentEventCache.size();
+    }
+
+    public void clearRecentEventCache() {
+        recentEventCache.clear();
     }
 }

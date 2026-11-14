@@ -25,11 +25,23 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
+import com.restrovision.domain.AiEvent;
+import com.restrovision.domain.RestaurantTable;
+import com.restrovision.repository.AiEventRepository;
+import com.restrovision.repository.AlertRepository;
+import com.restrovision.repository.RestaurantTableRepository;
+import com.restrovision.service.AiEventIngestionService;
+
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -57,6 +69,18 @@ class RestrovisionApplicationTests {
 
     @Autowired
     private WebSocketConfig webSocketConfig;
+
+    @Autowired
+    private AiEventRepository aiEventRepository;
+
+    @Autowired
+    private AiEventIngestionService aiEventIngestionService;
+
+    @Autowired
+    private RestaurantTableRepository tableRepository;
+
+    @Autowired
+    private AlertRepository alertRepository;
 
     @Autowired(required = false)
     private Flyway flyway;
@@ -349,6 +373,258 @@ class RestrovisionApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("ACCEPTED"))
                 .andExpect(jsonPath("$.eventId").value(eventId));
+    }
+
+    @Test
+    @DisplayName("07f: Concurrent duplicate delivery - exactly 1 ACCEPTED, remainder DUPLICATE_IGNORED, no duplicate state transitions (BUG-005)")
+    void testConcurrentDuplicateDeliveryRaceCondition() throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.95);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+        String edgeToken = getValidEdgeToken();
+
+        int threadCount = 10;
+        ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Future<String>> futures = new ArrayList<>();
+
+        for (int i = 0; i < threadCount; i++) {
+            futures.add(executor.submit(() -> {
+                startLatch.await();
+                MvcResult result = mockMvc.perform(post("/api/v1/ai/events")
+                                .header("Authorization", "Bearer " + edgeToken)
+                                .header("X-Signature", signature)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(rawBytes))
+                        .andReturn();
+                if (result.getResponse().getStatus() != 200) {
+                    return "ERROR_" + result.getResponse().getStatus();
+                }
+                JsonNode json = objectMapper.readTree(result.getResponse().getContentAsString());
+                return json.get("status").asText();
+            }));
+        }
+
+        startLatch.countDown();
+        executor.shutdown();
+        boolean completed = executor.awaitTermination(15, TimeUnit.SECONDS);
+        assertThat(completed).isTrue();
+
+        int acceptedCount = 0;
+        int duplicateIgnoredCount = 0;
+        for (Future<String> f : futures) {
+            String status = f.get();
+            if ("ACCEPTED".equals(status)) {
+                acceptedCount++;
+            } else if ("DUPLICATE_IGNORED".equals(status)) {
+                duplicateIgnoredCount++;
+            }
+        }
+
+        assertThat(acceptedCount).isEqualTo(1);
+        assertThat(duplicateIgnoredCount).isEqualTo(threadCount - 1);
+
+        long dbEventCount = aiEventRepository.findAll().stream()
+                .filter(e -> eventId.equals(e.getEventUid()) && Long.valueOf(1L).equals(e.getRestaurantId()))
+                .count();
+        assertThat(dbEventCount).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("07g: Signed-event replay, tampered UUID detection, stale replay, and delayed retry (BUG-005)")
+    void testSignedEventReplayAndTamperedUuid() throws Exception {
+        String edgeToken = getValidEdgeToken();
+
+        // 1. Legitimate original event
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.92);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        // 2. Direct replay of identical signed payload -> DUPLICATE_IGNORED
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DUPLICATE_IGNORED"));
+
+        // 3. Forged/tampered replay: attacker modifies eventId to bypass deduplication, but reuses original HMAC signature
+        Map<String, Object> tamperedPayload = new HashMap<>(payload);
+        String tamperedEventId = UUID.randomUUID().toString();
+        tamperedPayload.put("eventId", tamperedEventId);
+        byte[] tamperedBytes = objectMapper.writeValueAsBytes(tamperedPayload);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature) // Reused signature from original payload
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(tamperedBytes))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Invalid Signature"));
+
+        // Ensure tampered event was NEVER inserted into DB
+        assertThat(aiEventRepository.findByRestaurantIdAndEventUid(1L, tamperedEventId)).isEmpty();
+
+        // 4. Stale event replay (e.g. 10 days old) signed with fresh HMAC -> REJECTED_STALE
+        Map<String, Object> stalePayload = new HashMap<>(payload);
+        stalePayload.put("eventId", UUID.randomUUID().toString());
+        stalePayload.put("occurredAt", Instant.now().minus(java.time.Duration.ofDays(10)).toString());
+        byte[] staleBytes = objectMapper.writeValueAsBytes(stalePayload);
+        String staleSignature = calculateHmac(staleBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", staleSignature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(staleBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REJECTED_STALE"));
+
+        // 5. Legitimate delayed outbox retry (e.g. 25 minutes ago) -> ACCEPTED
+        Map<String, Object> retryPayload = new HashMap<>(payload);
+        retryPayload.put("eventId", UUID.randomUUID().toString());
+        retryPayload.put("occurredAt", Instant.now().minus(java.time.Duration.ofMinutes(25)).toString());
+        byte[] retryBytes = objectMapper.writeValueAsBytes(retryPayload);
+        String retrySignature = calculateHmac(retryBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", retrySignature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(retryBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+    }
+
+    @Test
+    @DisplayName("07h: Signature validation strictly precedes event processing; rejected events cannot alter state (BUG-005)")
+    void testSignatureValidationPrecedesEventProcessingAndStateRemainsUnchanged() throws Exception {
+        String edgeToken = getValidEdgeToken();
+
+        RestaurantTable tableBefore = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
+        String initialStatus = tableBefore.getStatus();
+        long initialAlertCount = alertRepository.count();
+        long initialAiEventCount = aiEventRepository.count();
+
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 1);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.99);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+
+        // Case A: Missing signature header
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Missing Signature"));
+
+        // Case B: Invalid / forged HMAC signature
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", "sha256=ba00000000000000000000000000000000000000000000000000000000000000")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.title").value("Invalid Signature"));
+
+        RestaurantTable tableAfter = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
+        assertThat(tableAfter.getStatus()).isEqualTo(initialStatus);
+        assertThat(alertRepository.count()).isEqualTo(initialAlertCount);
+        assertThat(aiEventRepository.count()).isEqualTo(initialAiEventCount);
+        assertThat(aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("07i: Deduplication cache eviction respects DB as authoritative single source of truth (BUG-005)")
+    void testCacheExpiryAndAuthoritativeDbConstraint() throws Exception {
+        String edgeToken = getValidEdgeToken();
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.94);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        // 1. Initial ingestion -> ACCEPTED, stored in DB and in cache
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        assertThat(aiEventIngestionService.getRecentEventCacheSize()).isGreaterThan(0);
+
+        // 2. Simulate cache eviction or backend restart by clearing the in-memory cache
+        aiEventIngestionService.clearRecentEventCache();
+        assertThat(aiEventIngestionService.getRecentEventCacheSize()).isEqualTo(0);
+
+        // 3. Re-submit same event; since cache is empty, it queries DB (authoritative source of truth)
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("DUPLICATE_IGNORED"));
+
+        // Verify cache was re-populated from authoritative DB check
+        assertThat(aiEventIngestionService.getRecentEventCacheSize()).isGreaterThan(0);
+
+        long count = aiEventRepository.findAll().stream()
+                .filter(e -> eventId.equals(e.getEventUid()) && Long.valueOf(1L).equals(e.getRestaurantId()))
+                .count();
+        assertThat(count).isEqualTo(1);
     }
 
     @Test

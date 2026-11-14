@@ -51,12 +51,15 @@ Remediation Group 2 addressed multi-tenancy safety, telemetry replay and freshne
   2. `Backend/src/main/java/com/restrovision/service/AiEventIngestionService.java`:
      - Added validation: if `occurredAt` is > 600s in the future, marks `REJECTED_CLOCK_SKEW` and returns HTTP 200 with status for edge outbox acknowledgment.
      - Added validation: if `occurredAt` is > 7200s in the past, marks `REJECTED_STALE` and returns HTTP 200 with status for edge outbox acknowledgment.
-     - Added fast-path in-memory `ConcurrentHashMap<String, Instant>` cache alongside durable database check against `ai_events` table (`CONSTRAINT uq_ai_event UNIQUE (restaurant_id, event_uid)`).
+     - Added fast-path in-memory `ConcurrentHashMap<String, Instant>` cache with TTL check (`cachedTime.isAfter(now.minusSeconds(maxEventAgeSeconds))`) and bounded memory enforcement (`putInCache` evicts entries older than `maxEventAgeSeconds` and prunes oldest entries if size exceeds 5,000).
+     - Removed method-level `@Transactional` on `ingestEvent` to isolate unique-key collisions; when concurrent events race past cache, `aiEventRepository.saveAndFlush` throws `DataIntegrityViolationException`, which is caught and returns `DUPLICATE_IGNORED` without marking an outer transaction rollback-only. Sub-operations (`TableStateMachineService`, `AlertService`) manage their own transactional boundaries.
      - Survives backend restarts because the primary duplicate check executes `findByRestaurantIdAndEventUid` against the persistent database.
   3. `Backend/src/main/java/com/restrovision/controller/AiEventController.java`:
      - Enforces non-null tenant check on `TenantContext.getRestaurantId()`, returning 401 Unauthorized if missing.
+     - Enforces HMAC-SHA256 signature verification over raw request bytes *prior* to JSON deserialization, DB access, or state transition.
   4. `Backend/src/test/java/com/restrovision/RestrovisionApplicationTests.java`:
      - Added tests `aiIngestionRejectsStaleTimestamp` (10-day stale event rejected as `REJECTED_STALE`), `aiIngestionRejectsExcessiveFutureTimestamp` (2-hour future event rejected as `REJECTED_CLOCK_SKEW`), `aiIngestionAcceptsDelayedOutboxRetry` (35-minute delayed event accepted), and `aiIngestionAcceptsClockSkewWithinTolerance` (5-minute future event accepted).
+     - Added supplementary tests: `testConcurrentDuplicateDeliveryRaceCondition` (10 concurrent threads, 1 ACCEPTED, 9 DUPLICATE_IGNORED), `testSignedEventReplayAndTamperedUuid` (forged UUID fails HMAC with 401, replay returns DUPLICATE_IGNORED), `testSignatureValidationPrecedesEventProcessingAndStateRemainsUnchanged` (invalid HMAC rejected with 401, state untouched), and `testCacheExpiryAndAuthoritativeDbConstraint` (DB remains authoritative idempotency mechanism on cache eviction).
 
 ### 2.3 BUG-006 & BUG-017: Table State Machine $1 + 2N$ Query Cascade Elimination
 - **Root Cause**: `TableStateMachineService.getTableView(Long restaurantId)` looped over all tables, executing 1 query for each table's assigned waiter and 1 query for each table's current session. On 50 tables, this executed 101 queries on every floor plan poll and every state mutation broadcast (`broadcastTable`).

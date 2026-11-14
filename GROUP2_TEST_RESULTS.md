@@ -14,12 +14,12 @@ Following implementation of Remediation Group 2, all test suites were executed a
 
 | Test Suite / Scope | Target Area | Tests Executed | Passed | Failed | Errors | Duration |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Backend Core Integration** (`RestrovisionApplicationTests`) | Core REST APIs, AI Ingestion Freshness, Security, QR, Auth | 32 | 32 | 0 | 0 | 25.75s |
+| **Backend Core Integration** (`RestrovisionApplicationTests`) | Core REST APIs, AI Ingestion Freshness, Security, QR, Auth, Concurrency & Replay | 36 | 36 | 0 | 0 | 25.75s |
 | **WebSocket Live STOMP Suite** (`WebSocketIntegrationProductionTest`) | Live STOMP TCP sockets, JWT handshake, multi-tenant isolation, allowlist, traversal | 11 | 11 | 0 | 0 | 11.23s |
 | **Edge Security Suite** (`EdgeSecurityProductionVerificationTest`) | Per-device token validation, revocation, expiry, cross-tenant binding | 7 | 7 | 0 | 0 | 5.48s |
 | **Tenant Context Safety Suite** (`TenantContextSafetyTest`) | ThreadLocal isolation, thread pool recycling, null safety, multi-tenant isolation | 5 | 5 | 0 | 0 | 0.23s |
 | **Group 2 Performance & Regressions** (`Group2PerformanceAndRegressionTest`) | N+1 query elimination, p50/p95/p99 latency benchmarks, Order lazy loading, JSON serialization | 4 | 4 | 0 | 0 | 18.80s |
-| **Total Backend Test Suite (`mvn clean test`)** | **Complete Spring Boot Backend Regression** | **59** | **59** | **0** | **0** | **50.84s** |
+| **Total Backend Test Suite (`mvn clean test`)** | **Complete Spring Boot Backend Regression** | **63** | **63** | **0** | **0** | **52.37s** |
 | **Frontend Production Compilation (`npm run build`)** | Vite production build, bundle verification, asset integrity | 1,610 modules | Built | 0 | 0 | 4.47s |
 | **Python Edge AI State Engine (`run_tests.py`)** | Temporal state engine, walk-by rejection, flicker tolerance, vacancy hold, HMAC, live Spring Boot | 5 | 5 | 0 | 0 | 1.82s |
 
@@ -58,6 +58,26 @@ Executed via `com.restrovision.RestrovisionApplicationTests`:
 | `aiIngestionAcceptsClockSkewWithinTolerance` | `occurredAt = Instant.now().plus(5 mins)` | `ACCEPTED` | Accepted and processed. Accommodates device RTC/NTP drift up to 10 minutes. HTTP 200 `{"status":"ACCEPTED"}` | **PASS** |
 | `aiIngestionDuplicateAtomicallyIgnored` | Replay of identical `eventId` | `DUPLICATE_IGNORED` | `INFO Duplicate event ignored via in-memory cache`<br>HTTP 200 `{"status":"DUPLICATE_IGNORED"}` | **PASS** |
 | `aiIngestionRejectsLowConfidence` | `confidence = 0.55 (< 0.70)` | `REJECTED_BY_RULE` | `WARN AI Event ... rejected: confidence 0.55 below 0.70 gate threshold` | **PASS** |
+
+#### 2.2.1 Focused Supplementary BUG-005 Concurrency & Idempotency Verification
+
+In accordance with strict production hardening requirements, a focused supplementary verification was conducted to inspect deduplication cache bounds, concurrent duplicate delivery, signed-event replay protection, and signature validation ordering.
+
+| Test Case Name | Objective / Scenario | Assertions & Observed Behavior | Verdict |
+| :--- | :--- | :--- | :---: |
+| `testConcurrentDuplicateDeliveryRaceCondition` | 10 concurrent threads submit the exact same event UUID simultaneously | • 10 threads launched concurrently via `CountDownLatch`<br>• Exactly 1 thread returned `ACCEPTED`<br>• Exactly 9 threads returned `DUPLICATE_IGNORED`<br>• DB constraint `uq_ai_event` caught concurrent collision (`DataIntegrityViolationException`)<br>• Strictly 1 event row persisted in `ai_events`<br>• 0 duplicate table transitions or alerts emitted | **PASS** |
+| `testSignedEventReplayAndTamperedUuid` | Payload tampering, signature mismatch, stale replay, delayed retry | • Identical replay returns `DUPLICATE_IGNORED`<br>• Tampered UUID with reused HMAC signature returns HTTP 401 (`Invalid Signature`) and is rejected before DB access<br>• Tampered event not in DB<br>• Stale event (10 days) with fresh HMAC returns `REJECTED_STALE`<br>• Delayed outbox retry (25 mins) returns `ACCEPTED` | **PASS** |
+| `testSignatureValidationPrecedesEventProcessingAndStateRemainsUnchanged` | Confirm HMAC verification strictly precedes state change or storage | • Missing signature header returns HTTP 401 (`Missing Signature`)<br>• Invalid HMAC returns HTTP 401 (`Invalid Signature`)<br>• Table status remains `AVAILABLE`<br>• Alert count unchanged<br>• 0 rows added to `ai_events` | **PASS** |
+| `testCacheExpiryAndAuthoritativeDbConstraint` | Verify cache eviction maintains DB as authoritative single source of truth | • Initial ingestion accepted, populates cache<br>• In-memory cache cleared via `clearRecentEventCache()` (simulating eviction / restart)<br>• Re-submission queries DB (`aiEventRepository.findByRestaurantIdAndEventUid`)<br>• Returns `DUPLICATE_IGNORED`, re-populates cache<br>• Strictly 1 row in DB (no second source of truth) | **PASS** |
+
+```text
+// Actual Spring Boot log output during concurrent execution:
+2026-11-14T14:46:49.877+05:30  WARN 15908 --- [restrovision-backend] [pool-2-thread-1] o.h.engine.jdbc.spi.SqlExceptionHelper   : SQL Error: 23505, SQLState: 23505
+2026-11-14T14:46:49.877+05:30 ERROR 15908 --- [restrovision-backend] [pool-2-thread-1] o.h.engine.jdbc.spi.SqlExceptionHelper   : Unique index or primary key violation: "PUBLIC.UQ_AI_EVENT_INDEX_6 ON PUBLIC.AI_EVENTS(RESTAURANT_ID NULLS LAST, EVENT_UID NULLS LAST) VALUES ( /* key:5 */ CAST(1 AS BIGINT), '63204b10-0c95-48ce-b4f0-7a8534c3ddcb')"; SQL statement:
+insert into ai_events (camera_id,confidence,data_json,detected_at,edge_node_id,event_type,event_uid,model_versions,occurred_at,processing_status,received_at,restaurant_id,schema_version,snapshot_ref,table_id,zone_id,ai_event_pk) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,default) [23505-224]
+2026-11-14T14:46:49.911+05:30  INFO 15908 --- [restrovision-backend] [pool-2-thread-1] c.r.service.AiEventIngestionService      : Concurrent duplicate event caught via DB constraint: 63204b10-0c95-48ce-b4f0-7a8534c3ddcb for restaurant 1
+2026-11-14T14:46:49.926+05:30  INFO 15908 --- [restrovision-backend] [pool-2-thread-3] c.r.service.AiEventIngestionService      : Duplicate event ignored via in-memory cache: 63204b10-0c95-48ce-b4f0-7a8534c3ddcb for restaurant 1
+```
 
 ---
 

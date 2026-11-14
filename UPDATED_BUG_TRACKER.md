@@ -29,7 +29,7 @@
 | **BUG-002** | **CRITICAL** | Security | `JwtAuthFilter.java` | Static edge token & hardcoded tenant ID (`1L`) | **RESOLVED & VERIFIED** | Replaced static string with per-device JWT signed by backend. Device identity validated against DB, status checked (`ACTIVE`/`ONLINE`), and tenant strictly resolved from DB. Tests 04, 05, 16–20 passing. |
 | **BUG-003** | **CRITICAL** | DevOps | `Backend/Dockerfile` | Dockerfile missing from disk; compose build fails | **RESOLVED (RUNTIME PENDING)** | Created production multi-stage `Backend/Dockerfile` (`maven:3.9.9` -> `eclipse-temurin:21-jre-alpine`) with non-root user `appuser:appgroup` and Actuator health check probe. Runtime execution marked pending host privileges. |
 | **BUG-004** | **HIGH** | Multi-Tenancy| `TenantContext.java`<br>`JwtAuthFilter.java` | ThreadLocal defaults and resets to `1L` (Tenant bleed) | **RESOLVED & VERIFIED** | Eliminated `withInitial(() -> 1L)` and reset in `clear()`. Replaced with uninitialized `new ThreadLocal<>()` returning `null` when unset and `CURRENT_RESTAURANT_ID.remove()` in `clear()`. Cleared in `finally` of `JwtAuthFilter`. Verified thread-pool recycling leaves 0 tenant traces across 20 recycled tasks via `TenantContextSafetyTest`. |
-| **BUG-005** | **HIGH** | Security | `AiEventIngestionService.java` | Zero timestamp freshness validation (Event replay) | **RESOLVED & VERIFIED** | Added timestamp freshness check: events > 2h old rejected as `REJECTED_STALE`; events > 10m ahead rejected as `REJECTED_CLOCK_SKEW`. Accommodates legitimate outbox backoff retries and device clock drift. Added in-memory deduplication cache backed by durable `uq_ai_event` constraint in DB. Verified via tests 07b–07e in `RestrovisionApplicationTests`. |
+| **BUG-005** | **HIGH** | Security | `AiEventIngestionService.java` | Zero timestamp freshness validation (Event replay) | **RESOLVED & VERIFIED** | Added timestamp freshness check: events > 2h old rejected as `REJECTED_STALE`; events > 10m ahead rejected as `REJECTED_CLOCK_SKEW`. Accommodates legitimate outbox backoff retries and device clock drift. Added in-memory deduplication cache with TTL and bounded eviction, backed by authoritative DB unique constraint `uq_ai_event`. Verified HMAC precedes processing, concurrent duplicates atomically caught by DB unique constraint, and tampered UUIDs rejected with 401. Verified via tests 07b–07i in `RestrovisionApplicationTests`. |
 | **BUG-006** | **HIGH** | Performance | `TableStateMachineService.java`| $1 + 2N$ database query cascade on table broadcasts | **RESOLVED & VERIFIED** | Replaced per-table loops in `getTableView` with batch `IN (:ids)` queries on `EmployeeRepository` and `TableSessionRepository`. Reduced SQL queries from 21 (10 tables) and 101 (50 tables) to at most 3 queries (97% reduction). Empirically verified via `Group2PerformanceAndRegressionTest`. |
 | **BUG-007** | **HIGH** | Performance | `Order.java:43` | `FetchType.EAGER` on `items` collection (Heap memory risk) | **RESOLVED & VERIFIED** | Refactored `Order.items` to `FetchType.LAZY`. Added targeted `@EntityGraph(attributePaths = {"items"})` on order retrieval queries and `@EntityGraph(attributePaths = {"order"})` on order items. Added `@Transactional(readOnly = true)`. Verified zero `LazyInitializationException` and clean serialization across all controllers. |
 | **BUG-008** | **HIGH** | Security | `AuthController.java` | No brute-force rate limiting or account lockout on login | PENDING (Group 3) | Scope of Group 3 (Stored XSS, rate limiting, UI error handling). |
@@ -110,7 +110,7 @@
   - `testMultiTenantIsolationAcrossThreads`: 8 concurrent worker threads verified with zero race conditions.
   - Suite: `TenantContextSafetyTest` (5/5 passed).
 
-### BUG-005 (AI Event Freshness, Clock Skew & Replay Protection)
+### BUG-005 (AI Event Freshness, Clock Skew, Replay Protection & Concurrency)
 - **Status**: **RESOLVED & VERIFIED**
 - **Verification Evidence**:
   - Added `restrovision.edge.freshness.max-event-age-seconds: 7200` (2h) and `clock-skew-tolerance-seconds: 600` (10m).
@@ -119,7 +119,11 @@
   - `aiIngestionAcceptsDelayedOutboxRetry`: Event 35 minutes in the past accepted (accommodates legitimate outbox backoff retries).
   - `aiIngestionAcceptsClockSkewWithinTolerance`: Event 5 minutes in the future accepted (accommodates IoT RTC/NTP drift).
   - `aiIngestionDuplicateAtomicallyIgnored`: Duplicate event ignored via fast-path cache and durable DB unique constraint.
-  - Suite: `RestrovisionApplicationTests` (32/32 passed).
+  - `testConcurrentDuplicateDeliveryRaceCondition`: 10 concurrent threads submit the exact same event UUID simultaneously; exactly 1 returns `ACCEPTED`, 9 return `DUPLICATE_IGNORED`, DB unique constraint `uq_ai_event` handles collision cleanly, 0 duplicate transitions/alerts.
+  - `testSignedEventReplayAndTamperedUuid`: Direct replay returns `DUPLICATE_IGNORED`; modifying UUID with reused signature fails HMAC check with 401 `Invalid Signature`; stale event (10 days) rejected with `REJECTED_STALE`; delayed retry (25m) returns `ACCEPTED`.
+  - `testSignatureValidationPrecedesEventProcessingAndStateRemainsUnchanged`: Invalid or missing signature returns 401; floor table status, alerts, and DB storage remain untouched.
+  - `testCacheExpiryAndAuthoritativeDbConstraint`: Clearing in-memory cache to simulate restart/eviction correctly relies on DB unique record/constraint as authoritative single source of truth.
+  - Suite: `RestrovisionApplicationTests` (36/36 passed).
 
 ### BUG-006 & BUG-017 (N+1 Query Elimination & Latency Benchmarks)
 - **Status**: **RESOLVED & VERIFIED**
