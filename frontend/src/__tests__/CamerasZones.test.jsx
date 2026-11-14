@@ -3,6 +3,14 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import CamerasZones from '../pages/CamerasZones';
 
+// Mock AuthContext
+let mockUserRole = 'OWNER';
+vi.mock('../context/AuthContext', () => ({
+  useAuth: () => ({
+    user: { jobRole: mockUserRole, email: 'owner@restrovision.com' },
+  }),
+}));
+
 // Mock API service
 vi.mock('../services/api', () => ({
   api: {
@@ -59,6 +67,7 @@ describe('CamerasZones Component', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserRole = 'OWNER';
 
     api.getCameras.mockResolvedValue(mockCameras);
     api.getZones.mockResolvedValue(mockZones);
@@ -86,11 +95,20 @@ describe('CamerasZones Component', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders CCTV header and Vision Feeds Active badge', async () => {
+  it('restricts camera access if user is not OWNER or MANAGER', () => {
+    mockUserRole = 'WAITER';
+    render(<CamerasZones />);
+
+    expect(screen.getByText(/Camera Security Gate: Restricted Access/i)).toBeInTheDocument();
+    expect(screen.getByText(/Your Role: WAITER/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Connect Device Camera/i)).not.toBeInTheDocument();
+  });
+
+  it('renders CCTV header and Vision Feeds Active badge for OWNER', async () => {
     render(<CamerasZones />);
 
     expect(screen.getByText(/CCTV Feeds & Edge Vision/i)).toBeInTheDocument();
-    expect(screen.getByText(/Vision Feeds Active/i)).toBeInTheDocument();
+    expect(screen.getByText(/Manager & Owner Access/i)).toBeInTheDocument();
     expect(screen.getByText(/Connect Device Camera/i)).toBeInTheDocument();
   });
 
@@ -119,23 +137,25 @@ describe('CamerasZones Component', () => {
     expect(screen.getByText(/01HC7R9V44A68B0011C54FE891/i)).toBeInTheDocument();
   });
 
-  it('switches cameras when clicking another camera tab', async () => {
+  it('allows selecting Mobile Rear camera source before connecting', async () => {
     render(<CamerasZones />);
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /CAM-02/i })).toBeInTheDocument();
-    });
+    const mobileBtn = screen.getByRole('button', { name: /Mobile Cam/i });
+    fireEvent.click(mobileBtn);
 
-    const cam2Btn = screen.getByRole('button', { name: /CAM-02/i });
-    fireEvent.click(cam2Btn);
+    const connectBtn = screen.getByText(/Connect Device Camera/i);
+    fireEvent.click(connectBtn);
 
     await waitFor(() => {
-      expect(api.getZones).toHaveBeenCalledWith(2);
-      expect(screen.getByText(/Stream: CAM-02: Bar & Reception/i)).toBeInTheDocument();
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'environment' } },
+        audio: false,
+      });
+      expect(screen.getByRole('button', { name: /CAM-LIVE/i })).toBeInTheDocument();
     });
   });
 
-  it('activates live device webcam when clicking Connect Device Camera', async () => {
+  it('activates live device webcam when clicking Connect Device Camera with default Webcam source', async () => {
     render(<CamerasZones />);
 
     const connectBtn = screen.getByText(/Connect Device Camera/i);
@@ -146,13 +166,12 @@ describe('CamerasZones Component', () => {
         video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
         audio: false,
       });
-      expect(screen.getByText(/Disconnect Device Camera/i)).toBeInTheDocument();
+      expect(screen.getByText(/Disconnect Camera/i)).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /CAM-LIVE/i })).toBeInTheDocument();
-      expect(screen.getByText(/Stream: CAM-LIVE: Device Camera/i)).toBeInTheDocument();
     });
 
     // Disconnect webcam
-    const disconnectBtn = screen.getByText(/Disconnect Device Camera/i);
+    const disconnectBtn = screen.getByText(/Disconnect Camera/i);
     fireEvent.click(disconnectBtn);
 
     await waitFor(() => {

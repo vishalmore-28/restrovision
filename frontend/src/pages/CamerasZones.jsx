@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
 import {
@@ -9,6 +10,7 @@ import {
   AlertTriangle,
   Layers,
   Shield,
+  ShieldAlert,
   Video,
   Radio,
   Cpu,
@@ -18,6 +20,9 @@ import {
   Users,
   Bell,
   Sparkles,
+  Smartphone,
+  Laptop,
+  Usb,
 } from 'lucide-react';
 
 const INITIAL_CAMERAS = [
@@ -32,14 +37,19 @@ const INITIAL_EVENTS = [
 ];
 
 export default function CamerasZones() {
+  const { user } = useAuth();
+  const userRole = user?.jobRole || 'OWNER';
+  const isAuthorized = userRole === 'OWNER' || userRole === 'MANAGER';
+
   const [cameras, setCameras] = useState(INITIAL_CAMERAS);
   const [selectedCam, setSelectedCam] = useState(INITIAL_CAMERAS[0]);
   const [zones, setZones] = useState([{ zoneId: 1 }, { zoneId: 2 }]);
   const [recentEvents, setRecentEvents] = useState(INITIAL_EVENTS);
   const [loading, setLoading] = useState(false);
 
-  // In-browser webcam state
+  // In-browser device camera state & hardware source selection
   const [isWebcamActive, setIsWebcamActive] = useState(false);
+  const [cameraSource, setCameraSource] = useState('WEBCAM'); // 'WEBCAM' | 'MOBILE' | 'USB'
   const [cameraError, setCameraError] = useState(null);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -63,6 +73,8 @@ export default function CamerasZones() {
   const [isProcessingAction, setIsProcessingAction] = useState(false);
 
   useEffect(() => {
+    if (!isAuthorized) return;
+
     api.getCameras()
       .then((list) => {
         if (Array.isArray(list) && list.length > 0) {
@@ -95,11 +107,11 @@ export default function CamerasZones() {
       unsubTables();
       stopWebcam();
     };
-  }, []);
+  }, [isAuthorized]);
 
   // Continuous AI Vision Loop timer
   useEffect(() => {
-    if (!isAiAutoPilot) return;
+    if (!isAiAutoPilot || !isAuthorized) return;
 
     const interval = setInterval(() => {
       setAiTelemetry((prev) => {
@@ -116,7 +128,39 @@ export default function CamerasZones() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [isAiAutoPilot]);
+  }, [isAiAutoPilot, isAuthorized]);
+
+  // RBAC Access Restriction Gate for non-Owner/Manager
+  if (!isAuthorized) {
+    return (
+      <div
+        className="p-6 sm:p-10 max-w-lg mx-auto my-8 sm:my-14 rounded-2xl border text-center space-y-4 shadow-sm"
+        style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border)' }}
+      >
+        <div
+          className="w-12 h-12 rounded-xl mx-auto flex items-center justify-center border"
+          style={{
+            backgroundColor: 'var(--status-critical-bg)',
+            borderColor: 'var(--status-critical-border)',
+            color: 'var(--status-critical)',
+          }}
+        >
+          <ShieldAlert className="w-6 h-6" />
+        </div>
+        <div>
+          <h2 className="text-base sm:text-lg font-bold" style={{ color: 'var(--text-primary)' }}>
+            Camera Security Gate: Restricted Access
+          </h2>
+          <p className="text-xs sm:text-sm mt-1.5 leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+            Access to live CCTV camera streams, webcam/mobile vision sensors, and Edge AI inference telemetry is restricted exclusively to <strong>Restaurant Owners</strong> and <strong>Floor Managers</strong>.
+          </p>
+          <div className="mt-3 inline-block px-2.5 py-1 rounded-md text-[11px] font-mono border" style={{ backgroundColor: 'var(--bg-main)', borderColor: 'var(--border)', color: 'var(--text-muted)' }}>
+            Your Role: {userRole} (Senior clearance required)
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const loadZones = (camId) => {
     api.getZones(camId)
@@ -140,24 +184,30 @@ export default function CamerasZones() {
     }
   };
 
-  // 1-Click Browser Camera Permission & Stream
-  const toggleDeviceCamera = async () => {
-    if (isWebcamActive) {
-      stopWebcam();
-      const defaultCam = cameras.find((c) => !c.isWebcam) || INITIAL_CAMERAS[0];
-      setSelectedCam(defaultCam);
-      setCameras((prev) => prev.filter((c) => !c.isWebcam));
-      return;
-    }
-
+  // 1-Click Browser Camera Permission & Stream with Hardware Source Routing
+  const startCameraStream = async (sourceType = cameraSource) => {
     setCameraError(null);
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
         throw new Error('Camera media devices API is not supported in this browser.');
       }
 
+      // Hardware constraint resolution based on selected source
+      let videoConstraints = {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      };
+
+      if (sourceType === 'MOBILE') {
+        // Rear environment camera for scanning dining floor/tables from mobile
+        videoConstraints.facingMode = { ideal: 'environment' };
+      } else if (sourceType === 'WEBCAM') {
+        // Laptop front-facing webcam
+        videoConstraints.facingMode = 'user';
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        video: videoConstraints,
         audio: false,
       });
 
@@ -168,11 +218,12 @@ export default function CamerasZones() {
       }
       setIsWebcamActive(true);
 
+      const sourceLabel = sourceType === 'MOBILE' ? 'Mobile Camera' : sourceType === 'USB' ? 'USB / System Cam' : 'Webcam';
       const webcamCam = {
         cameraId: 999,
-        name: 'CAM-LIVE: Device Camera',
+        name: `CAM-LIVE: ${sourceLabel}`,
         targetFps: 30.0,
-        edgeNodeId: 'browser-sensor-01',
+        edgeNodeId: sourceType === 'MOBILE' ? 'mobile-sensor-01' : 'browser-sensor-01',
         isWebcam: true,
       };
 
@@ -185,6 +236,25 @@ export default function CamerasZones() {
           ? 'Camera permission was denied. Please allow camera access in your browser.'
           : (err.message || 'Unable to access device camera.')
       );
+    }
+  };
+
+  const toggleDeviceCamera = async () => {
+    if (isWebcamActive) {
+      stopWebcam();
+      const defaultCam = cameras.find((c) => !c.isWebcam) || INITIAL_CAMERAS[0];
+      setSelectedCam(defaultCam);
+      setCameras((prev) => prev.filter((c) => !c.isWebcam));
+      return;
+    }
+    await startCameraStream(cameraSource);
+  };
+
+  const changeCameraSource = async (newSource) => {
+    setCameraSource(newSource);
+    if (isWebcamActive) {
+      stopWebcam();
+      await startCameraStream(newSource);
     }
   };
 
@@ -308,41 +378,88 @@ export default function CamerasZones() {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="space-y-4 sm:space-y-6 max-w-full">
+      {/* Header with Responsive Controls & Source Selector */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4">
         <div>
-          <h1 className="text-xl font-bold tracking-tight flex items-center gap-2.5" style={{ color: 'var(--text-primary)' }}>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight flex flex-wrap items-center gap-2" style={{ color: 'var(--text-primary)' }}>
             CCTV Feeds &amp; Edge Vision
             <span
-              className="text-xs font-semibold px-2 py-0.5 rounded border"
+              className="text-[10px] sm:text-xs font-semibold px-2 py-0.5 rounded border"
               style={{
                 backgroundColor: 'var(--bg-card)',
                 borderColor: 'var(--border)',
                 color: 'var(--text-secondary)',
               }}
             >
-              Vision Feeds Active
+              Manager &amp; Owner Access
             </span>
           </h1>
-          <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-            Real-time CCTV camera streams, configured polygon ROI zones, and edge node vision pipeline status. Edge nodes authenticate with HMAC-SHA256 signatures.
+          <p className="text-[11px] sm:text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
+            Real-time camera streams, polygon table ROI zones, and edge node vision pipeline status.
           </p>
         </div>
 
-        {/* 1-Click Connect Device Camera Pill */}
-        <button
-          onClick={toggleDeviceCamera}
-          className="self-start sm:self-auto px-3.5 py-2 rounded-xl text-xs font-bold transition-all duration-200 flex items-center gap-2 border shadow-sm"
-          style={{
-            backgroundColor: isWebcamActive ? 'var(--status-occupied-bg)' : 'var(--bg-card)',
-            borderColor: isWebcamActive ? 'var(--status-occupied-border)' : 'var(--border)',
-            color: isWebcamActive ? 'var(--status-occupied)' : 'var(--text-primary)',
-          }}
-        >
-          <Camera className={`w-3.5 h-3.5 ${isWebcamActive ? 'text-red-500 animate-pulse' : 'text-emerald-500'}`} />
-          {isWebcamActive ? 'Disconnect Device Camera' : 'Connect Device Camera'}
-        </button>
+        {/* Camera Source Selector & 1-Click Connect Pill */}
+        <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto w-full sm:w-auto">
+          {/* Source Toggle: Webcam vs Mobile vs USB */}
+          <div
+            className="flex items-center p-1 rounded-xl border text-[11px] font-semibold"
+            style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border)' }}
+          >
+            <button
+              onClick={() => changeCameraSource('WEBCAM')}
+              className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+                cameraSource === 'WEBCAM'
+                  ? 'bg-neutral-800 text-emerald-400 font-bold shadow-xs'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+              title="Laptop / Desktop Front Webcam"
+            >
+              <Laptop className="w-3.5 h-3.5" />
+              <span>Webcam</span>
+            </button>
+            <button
+              onClick={() => changeCameraSource('MOBILE')}
+              className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+                cameraSource === 'MOBILE'
+                  ? 'bg-neutral-800 text-emerald-400 font-bold shadow-xs'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+              title="Mobile Device Rear / Environment Camera"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>Mobile Cam</span>
+            </button>
+            <button
+              onClick={() => changeCameraSource('USB')}
+              className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+                cameraSource === 'USB'
+                  ? 'bg-neutral-800 text-emerald-400 font-bold shadow-xs'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+              title="External USB / System Camera"
+            >
+              <Usb className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">System / USB</span>
+              <span className="sm:hidden">USB</span>
+            </button>
+          </div>
+
+          {/* Connect / Disconnect Action Button */}
+          <button
+            onClick={toggleDeviceCamera}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold transition-all duration-200 flex items-center justify-center gap-2 border shadow-sm grow sm:grow-0 min-h-[38px]"
+            style={{
+              backgroundColor: isWebcamActive ? 'var(--status-occupied-bg)' : 'var(--bg-card)',
+              borderColor: isWebcamActive ? 'var(--status-occupied-border)' : 'var(--border)',
+              color: isWebcamActive ? 'var(--status-occupied)' : 'var(--text-primary)',
+            }}
+          >
+            <Camera className={`w-3.5 h-3.5 ${isWebcamActive ? 'text-red-500 animate-pulse' : 'text-emerald-500'}`} />
+            <span>{isWebcamActive ? 'Disconnect Camera' : 'Connect Device Camera'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Permission / Notice Banner if error */}
@@ -377,16 +494,16 @@ export default function CamerasZones() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Left: Video Preview & Zone Overlays */}
         <div className="lg:col-span-2 space-y-4">
           {/* Camera Tabs */}
-          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
             {cameras.map((c) => (
               <button
                 key={c.cameraId}
                 onClick={() => selectCamera(c)}
-                className="px-3.5 py-2 rounded-xl text-xs font-bold transition-colors duration-150 flex items-center gap-2 border whitespace-nowrap"
+                className="px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs font-bold transition-colors duration-150 flex items-center gap-2 border whitespace-nowrap shrink-0"
                 style={{
                   backgroundColor: selectedCam?.cameraId === c.cameraId ? 'var(--btn-primary)' : 'var(--bg-card)',
                   borderColor: selectedCam?.cameraId === c.cameraId ? 'var(--btn-primary)' : 'var(--border)',
@@ -400,8 +517,8 @@ export default function CamerasZones() {
             ))}
           </div>
 
-          {/* CCTV Feed Canvas */}
-          <div className="bg-neutral-950 rounded-2xl border border-neutral-800 overflow-hidden relative shadow-lg aspect-video flex items-center justify-center">
+          {/* CCTV Feed Canvas - Fully Responsive Aspect-Video */}
+          <div className="bg-neutral-950 rounded-2xl border border-neutral-800 overflow-hidden relative shadow-lg aspect-video w-full flex items-center justify-center">
             {/* Live WebRTC Camera Stream when selected */}
             <video
               ref={videoRef}
@@ -414,27 +531,27 @@ export default function CamerasZones() {
             />
 
             {/* Overlaid UI, Bounding Boxes, & Telemetry */}
-            <div className="absolute inset-0 p-5 flex flex-col justify-between z-10 pointer-events-none">
+            <div className="absolute inset-0 p-2.5 sm:p-5 flex flex-col justify-between z-10 pointer-events-none">
               {/* Top OSD info */}
-              <div className="flex items-center justify-between text-xs bg-neutral-900/90 backdrop-blur-md p-2 rounded-lg border border-neutral-800 text-neutral-300">
-                <span className="flex items-center gap-2 font-bold" style={{ color: 'var(--status-available)' }}>
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+              <div className="flex items-center justify-between text-[10px] sm:text-xs bg-neutral-900/90 backdrop-blur-md p-1.5 sm:p-2 rounded-lg border border-neutral-800 text-neutral-300">
+                <span className="flex items-center gap-1.5 sm:gap-2 font-bold truncate max-w-[45%]" style={{ color: 'var(--status-available)' }}>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0"></span>
                   Stream: {selectedCam?.name || 'CAM-01'}
                 </span>
-                <span>
-                  FPS: <span className="font-mono tabular">{aiTelemetry.fps || selectedCam?.targetFps || 24.0}</span> |{' '}
-                  {selectedCam?.isWebcam ? 'Device WebRTC' : '1080p RTSP'}
+                <span className="tabular font-mono">
+                  FPS: {aiTelemetry.fps || selectedCam?.targetFps || 24.0} |{' '}
+                  {selectedCam?.isWebcam ? cameraSource : 'RTSP'}
                 </span>
-                <span>
+                <span className="hidden sm:inline">
                   Node: <span className="font-mono">{selectedCam?.edgeNodeId || 'edge-pune-01'}</span>
                 </span>
               </div>
 
-              {/* Graphical Table Zones & Detection Bounding Boxes */}
-              <div className="relative w-full h-4/5 flex items-center justify-center gap-8">
+              {/* Graphical Table Zones & Detection Bounding Boxes - Auto-scalable for Mobile */}
+              <div className="relative w-full h-4/5 flex items-center justify-center gap-2 sm:gap-6 md:gap-8 px-1">
                 {/* Zone T01 */}
                 <div
-                  className={`border-2 rounded-xl p-3 text-center relative w-48 h-32 flex flex-col items-center justify-center backdrop-blur-xs transition-all duration-300 ${
+                  className={`border-2 rounded-xl p-1.5 sm:p-3 text-center relative w-[46%] sm:w-44 md:w-48 h-24 sm:h-28 md:h-32 flex flex-col items-center justify-center backdrop-blur-xs transition-all duration-300 ${
                     aiTelemetry.t01State === 'OCCUPIED' ? 'ring-2 ring-red-500/50' : ''
                   }`}
                   style={{
@@ -443,7 +560,7 @@ export default function CamerasZones() {
                   }}
                 >
                   <span
-                    className="absolute -top-2.5 left-2.5 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow"
+                    className="absolute -top-2 left-1.5 sm:left-2.5 text-white text-[8px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded shadow truncate max-w-[90%]"
                     style={{
                       backgroundColor: aiTelemetry.t01State === 'OCCUPIED' ? 'var(--status-occupied)' : 'var(--status-available)',
                     }}
@@ -452,13 +569,13 @@ export default function CamerasZones() {
                   </span>
 
                   {aiTelemetry.activeGesture && (
-                    <span className="absolute -bottom-2.5 bg-amber-500 text-black text-[9px] font-black px-2 py-0.5 rounded-full shadow animate-bounce">
+                    <span className="absolute -bottom-2 bg-amber-500 text-black text-[8px] sm:text-[9px] font-black px-1.5 py-0.5 rounded-full shadow animate-bounce">
                       ✋ {aiTelemetry.activeGesture}
                     </span>
                   )}
 
                   <div
-                    className="w-8 h-8 rounded-full border flex items-center justify-center text-xs font-bold mb-1"
+                    className="w-6 h-6 sm:w-8 sm:h-8 rounded-full border flex items-center justify-center text-[10px] sm:text-xs font-bold mb-0.5 sm:mb-1 shrink-0"
                     style={{
                       borderColor: aiTelemetry.t01State === 'OCCUPIED' ? 'var(--status-occupied)' : 'var(--status-available)',
                       color: aiTelemetry.t01State === 'OCCUPIED' ? 'var(--status-occupied)' : 'var(--status-available)',
@@ -467,17 +584,17 @@ export default function CamerasZones() {
                     T01
                   </div>
                   <span
-                    className="text-[10px] font-semibold"
+                    className="text-[8px] sm:text-[10px] font-semibold truncate max-w-full px-1"
                     style={{
                       color: aiTelemetry.t01State === 'OCCUPIED' ? 'var(--status-occupied)' : 'var(--status-available)',
                     }}
                   >
                     {aiTelemetry.t01State === 'OCCUPIED'
-                      ? `Occupied: 2 Patrons (${Math.round(aiTelemetry.t01Confidence * 100)}%)`
+                      ? `Occupied: 2 (${Math.round(aiTelemetry.t01Confidence * 100)}%)`
                       : 'Available / Empty'}
                   </span>
                   {aiTelemetry.t01State === 'OCCUPIED' && (
-                    <span className="text-[9px] font-mono text-neutral-400 mt-0.5">
+                    <span className="text-[7px] sm:text-[9px] font-mono text-neutral-400 mt-0.5">
                       Dwell: {aiTelemetry.t01DwellSec}s
                     </span>
                   )}
@@ -485,20 +602,20 @@ export default function CamerasZones() {
 
                 {/* Zone T02 */}
                 <div
-                  className="border-2 border-dashed rounded-xl p-3 text-center relative w-48 h-32 flex flex-col items-center justify-center backdrop-blur-xs transition-all duration-300"
+                  className="border-2 border-dashed rounded-xl p-1.5 sm:p-3 text-center relative w-[46%] sm:w-44 md:w-48 h-24 sm:h-28 md:h-32 flex flex-col items-center justify-center backdrop-blur-xs transition-all duration-300"
                   style={{
                     borderColor: 'var(--status-available)',
                     backgroundColor: 'rgba(16, 185, 129, 0.08)',
                   }}
                 >
                   <span
-                    className="absolute -top-2.5 left-2.5 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow"
+                    className="absolute -top-2 left-1.5 sm:left-2.5 text-white text-[8px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded shadow truncate max-w-[90%]"
                     style={{ backgroundColor: 'var(--status-available)' }}
                   >
                     Zone: Table T02
                   </span>
                   <div
-                    className="w-8 h-8 rounded-full border flex items-center justify-center text-xs font-bold mb-1"
+                    className="w-6 h-6 sm:w-8 sm:h-8 rounded-full border flex items-center justify-center text-[10px] sm:text-xs font-bold mb-0.5 sm:mb-1 shrink-0"
                     style={{
                       borderColor: 'var(--status-available)',
                       color: 'var(--status-available)',
@@ -506,41 +623,41 @@ export default function CamerasZones() {
                   >
                     T02
                   </div>
-                  <span className="text-[10px] font-semibold" style={{ color: 'var(--status-available)' }}>
+                  <span className="text-[8px] sm:text-[10px] font-semibold truncate max-w-full px-1" style={{ color: 'var(--status-available)' }}>
                     Available / Empty (98.8%)
                   </span>
-                  <span className="text-[9px] font-mono text-neutral-400 mt-0.5">
-                    Temporal Filter: Clean
+                  <span className="text-[7px] sm:text-[9px] font-mono text-neutral-400 mt-0.5">
+                    Temporal: Clean
                   </span>
                 </div>
               </div>
 
               {/* Bottom OSD */}
-              <div className="text-[11px] text-neutral-400 bg-neutral-900/90 backdrop-blur-md p-2 rounded-lg flex items-center justify-between border border-neutral-800">
-                <span className="flex items-center gap-1.5" style={{ color: 'var(--status-available)' }}>
-                  <Shield className="w-3.5 h-3.5" /> Edge Privacy Filter Active (No face storage)
+              <div className="text-[9px] sm:text-[11px] text-neutral-400 bg-neutral-900/90 backdrop-blur-md p-1.5 sm:p-2 rounded-lg flex items-center justify-between border border-neutral-800">
+                <span className="flex items-center gap-1.5 truncate max-w-[65%]" style={{ color: 'var(--status-available)' }}>
+                  <Shield className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" /> Edge Privacy Filter Active
                 </span>
-                <span>Active Zones: {zones.length} configured</span>
+                <span className="shrink-0">{zones.length} Zones mapped</span>
               </div>
             </div>
           </div>
 
           {/* Real-Time AI Vision Control & Automation Ribbon */}
           <div
-            className="rounded-2xl p-4 border shadow-sm space-y-3"
+            className="rounded-2xl p-3.5 sm:p-4 border shadow-sm space-y-3"
             style={{
               backgroundColor: 'var(--bg-card)',
               borderColor: 'var(--border)',
             }}
           >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-3" style={{ borderColor: 'var(--border)' }}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-2.5" style={{ borderColor: 'var(--border)' }}>
               <div className="flex items-center gap-2">
                 <Zap className="w-4 h-4 text-emerald-500" />
                 <span className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>
                   Real-Time AI Vision Actions
                 </span>
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                  Continuous Analysis Active
+                  Active
                 </span>
               </div>
 
@@ -560,50 +677,50 @@ export default function CamerasZones() {
             </div>
 
             <p className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-              Connect physical camera or click 1-touch AI detection to simulate live patron arrival, gesture recognition, or vacancy. All actions synchronize with the restaurant floor plan and staff in real time.
+              Use your device camera (Mobile / Laptop / USB) or 1-touch triggers to simulate patron arrival, gesture calls, or vacancies. Live updates synchronize across the entire restaurant in real time.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
               <button
                 disabled={isProcessingAction}
                 onClick={triggerAiSeatedParty}
-                className="px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50"
+                className="px-3 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50 min-h-[40px]"
                 style={{
                   backgroundColor: 'rgba(16, 185, 129, 0.12)',
                   borderColor: 'rgba(16, 185, 129, 0.4)',
                   color: 'var(--status-available)',
                 }}
               >
-                <Users className="w-3.5 h-3.5" />
-                AI Detect: Seated Patrons (T01)
+                <Users className="w-3.5 h-3.5 shrink-0" />
+                <span>AI Detect: Seated Patrons (T01)</span>
               </button>
 
               <button
                 disabled={isProcessingAction}
                 onClick={triggerAiGesture}
-                className="px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50"
+                className="px-3 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50 min-h-[40px]"
                 style={{
                   backgroundColor: 'rgba(245, 158, 11, 0.12)',
                   borderColor: 'rgba(245, 158, 11, 0.4)',
                   color: 'rgb(245, 158, 11)',
                 }}
               >
-                <Bell className="w-3.5 h-3.5" />
-                AI Detect: Call Waiter (T01)
+                <Bell className="w-3.5 h-3.5 shrink-0" />
+                <span>AI Detect: Call Waiter (T01)</span>
               </button>
 
               <button
                 disabled={isProcessingAction}
                 onClick={triggerAiVacated}
-                className="px-3 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50"
+                className="px-3 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50 min-h-[40px]"
                 style={{
                   backgroundColor: 'rgba(239, 68, 68, 0.12)',
                   borderColor: 'rgba(239, 68, 68, 0.4)',
                   color: 'var(--status-occupied)',
                 }}
               >
-                <Power className="w-3.5 h-3.5" />
-                AI Detect: Table Vacated (T01)
+                <Power className="w-3.5 h-3.5 shrink-0" />
+                <span>AI Detect: Table Vacated (T01)</span>
               </button>
             </div>
           </div>
@@ -612,7 +729,7 @@ export default function CamerasZones() {
         {/* Right: Edge Node Status & Live AI Event Feed */}
         <div className="space-y-4">
           <div
-            className="rounded-2xl p-5 border shadow-sm space-y-3"
+            className="rounded-2xl p-4 sm:p-5 border shadow-sm space-y-3"
             style={{
               backgroundColor: 'var(--bg-card)',
               borderColor: 'var(--border)',
@@ -704,7 +821,7 @@ export default function CamerasZones() {
               </button>
             </div>
 
-            <div className="space-y-2 max-h-72 overflow-y-auto text-xs">
+            <div className="space-y-2 max-h-60 sm:max-h-72 overflow-y-auto text-xs">
               {recentEvents.length === 0 ? (
                 <p className="py-6 text-center" style={{ color: 'var(--text-muted)' }}>
                   No AI events recorded yet for this session.
