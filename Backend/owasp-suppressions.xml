@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+    <!--
+      RESTROVISION Production Dependency Suppression File
+      All suppressions must include individual CVE/CPE justification, documented rationale, and review dates.
+      No genuine unmitigated vulnerabilities may be suppressed.
+    -->
+</suppressions>
