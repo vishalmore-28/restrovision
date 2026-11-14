@@ -141,10 +141,19 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     private void processUserAuthentication(Claims claims, HttpServletRequest request) {
         String email = claims.getSubject();
         Number restIdNum = (Number) claims.get("restaurantId");
-        Long restaurantId = restIdNum != null ? restIdNum.longValue() : 1L;
-        TenantContext.setRestaurantId(restaurantId);
+        Long restaurantId = restIdNum != null ? restIdNum.longValue() : null;
 
         UserDetails userDetails = userDetailsService.loadUserByUsername(email);
+        if (restaurantId == null && userDetails instanceof CustomUserDetails) {
+            restaurantId = ((CustomUserDetails) userDetails).getRestaurantId();
+        }
+
+        if (restaurantId != null) {
+            TenantContext.setRestaurantId(restaurantId);
+        } else {
+            TenantContext.clear();
+        }
+
         UsernamePasswordAuthenticationToken authentication =
                 new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
         authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));

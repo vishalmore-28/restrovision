@@ -236,6 +236,122 @@ class RestrovisionApplicationTests {
     }
 
     @Test
+    @DisplayName("07b: AI event ingestion rejects stale events exceeding max age window (ARCH-004 / BUG-005)")
+    void aiIngestionRejectsStaleTimestamp() throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.95);
+        // 10 days in the past (historical replay attack)
+        payload.put("occurredAt", Instant.now().minus(java.time.Duration.ofDays(10)).toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + getValidEdgeToken())
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REJECTED_STALE"))
+                .andExpect(jsonPath("$.eventId").value(eventId));
+    }
+
+    @Test
+    @DisplayName("07c: AI event ingestion rejects excessive future timestamp beyond clock skew tolerance (BUG-005)")
+    void aiIngestionRejectsExcessiveFutureTimestamp() throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.95);
+        // 2 hours in the future
+        payload.put("occurredAt", Instant.now().plus(java.time.Duration.ofHours(2)).toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + getValidEdgeToken())
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("REJECTED_CLOCK_SKEW"))
+                .andExpect(jsonPath("$.eventId").value(eventId));
+    }
+
+    @Test
+    @DisplayName("07d: AI event ingestion accepts legitimate delayed outbox retry within 2h window (BUG-005)")
+    void aiIngestionAcceptsDelayedOutboxRetry() throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.91);
+        // 35 minutes in the past (e.g. legitimate outbox retry attempt #5)
+        payload.put("occurredAt", Instant.now().minus(java.time.Duration.ofMinutes(35)).toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + getValidEdgeToken())
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.eventId").value(eventId));
+    }
+
+    @Test
+    @DisplayName("07e: AI event ingestion accepts slight clock skew (5m future) within tolerance (BUG-005)")
+    void aiIngestionAcceptsClockSkewWithinTolerance() throws Exception {
+        String eventId = UUID.randomUUID().toString();
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.93);
+        // 5 minutes in the future (within 10-minute clock skew tolerance)
+        payload.put("occurredAt", Instant.now().plus(java.time.Duration.ofMinutes(5)).toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + getValidEdgeToken())
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.eventId").value(eventId));
+    }
+
+    @Test
     @DisplayName("08: Public QR status endpoint resolves valid tokens and rejects invalid ones")
     void publicQrTokenValidation() throws Exception {
         // Valid token seeded by DataInitializer

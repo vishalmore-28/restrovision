@@ -6,6 +6,7 @@ import com.restrovision.dto.AiEventEnvelopeDto;
 import com.restrovision.repository.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,10 +15,19 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class AiEventIngestionService {
     private static final Logger log = LoggerFactory.getLogger(AiEventIngestionService.class);
+
+    @Value("${restrovision.edge.freshness.max-event-age-seconds:7200}")
+    private long maxEventAgeSeconds = 7200;
+
+    @Value("${restrovision.edge.freshness.clock-skew-tolerance-seconds:600}")
+    private long clockSkewToleranceSeconds = 600;
+
+    private final ConcurrentHashMap<String, Instant> recentEventCache = new ConcurrentHashMap<>();
 
     private final AiEventRepository aiEventRepository;
     private final TableStateMachineService tableStateMachine;
@@ -47,21 +57,34 @@ public class AiEventIngestionService {
 
     @Transactional
     public Map<String, Object> ingestEvent(AiEventEnvelopeDto envelope) {
-        Long restaurantId = envelope.getRestaurantId() != null ? envelope.getRestaurantId() : 1L;
+        Long restaurantId = envelope.getRestaurantId();
+        if (restaurantId == null) {
+            throw new IllegalArgumentException("Tenant restaurantId must not be null for AI event ingestion");
+        }
         String eventId = envelope.getEventId();
-
-        // 1. In-memory check for duplicate
-        Optional<AiEvent> existing = aiEventRepository.findByRestaurantIdAndEventUid(restaurantId, eventId);
-        if (existing.isPresent()) {
-            log.info("Duplicate event ignored: {} for restaurant {}", eventId, restaurantId);
-            Map<String, Object> resp = new HashMap<>();
-            resp.put("success", true);
-            resp.put("eventId", eventId);
-            resp.put("status", "DUPLICATE_IGNORED");
-            return resp;
+        if (eventId == null || eventId.isBlank()) {
+            throw new IllegalArgumentException("AI eventId must not be null or blank");
         }
 
-        // 2. Prepare event entity
+        String cacheKey = restaurantId + ":" + eventId;
+        // 1. In-memory fast check for duplicate
+        if (recentEventCache.containsKey(cacheKey)) {
+            log.info("Duplicate event ignored via in-memory cache: {} for restaurant {}", eventId, restaurantId);
+            return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
+        }
+
+        // 2. Persistent DB check for duplicate (survives backend restarts)
+        Optional<AiEvent> existing = aiEventRepository.findByRestaurantIdAndEventUid(restaurantId, eventId);
+        if (existing.isPresent()) {
+            recentEventCache.put(cacheKey, Instant.now());
+            log.info("Duplicate event ignored via DB record: {} for restaurant {}", eventId, restaurantId);
+            return Map.of("success", true, "eventId", eventId, "status", "DUPLICATE_IGNORED");
+        }
+
+        // 3. Prepare event entity
+        Instant now = Instant.now();
+        Instant occurredAt = envelope.getOccurredAt() != null ? envelope.getOccurredAt() : now;
+
         AiEvent aiEvent = new AiEvent();
         aiEvent.setRestaurantId(restaurantId);
         aiEvent.setEventUid(eventId);
@@ -72,8 +95,8 @@ public class AiEventIngestionService {
         aiEvent.setTableId(envelope.getTableId());
         aiEvent.setEventType(envelope.getEventType());
         aiEvent.setConfidence(envelope.getConfidence());
-        aiEvent.setOccurredAt(envelope.getOccurredAt() != null ? envelope.getOccurredAt() : Instant.now());
-        aiEvent.setDetectedAt(envelope.getDetectedAt() != null ? envelope.getDetectedAt() : Instant.now());
+        aiEvent.setOccurredAt(occurredAt);
+        aiEvent.setDetectedAt(envelope.getDetectedAt() != null ? envelope.getDetectedAt() : now);
         aiEvent.setSnapshotRef(envelope.getSnapshotRef());
 
         try {
@@ -87,10 +110,45 @@ public class AiEventIngestionService {
             log.warn("Failed to serialize modelVersions or data to JSON: {}", ex.getMessage());
         }
 
-        // Atomic DB insert catching concurrent unique-key collisions
+        // 4. Timestamp Freshness & Clock Skew Validation
+        // A. Reject events far in the future (beyond clock skew tolerance)
+        if (occurredAt.isAfter(now.plusSeconds(clockSkewToleranceSeconds))) {
+            log.warn("AI Event {} rejected: occurredAt {} is in the future beyond {}s clock skew limit",
+                    eventId, occurredAt, clockSkewToleranceSeconds);
+            aiEvent.setProcessingStatus("REJECTED_CLOCK_SKEW");
+            try {
+                aiEventRepository.saveAndFlush(aiEvent);
+                recentEventCache.put(cacheKey, now);
+            } catch (DataIntegrityViolationException dive) {
+                log.info("Concurrent duplicate caught for future event {}: {}", eventId, dive.getMessage());
+            }
+            return Map.of("success", true, "eventId", eventId, "status", "REJECTED_CLOCK_SKEW");
+        }
+
+        // B. Reject stale telemetry exceeding maximum retry/shift window (e.g. > 2 hours)
+        if (occurredAt.isBefore(now.minusSeconds(maxEventAgeSeconds))) {
+            log.warn("AI Event {} rejected: occurredAt {} is stale (exceeds max event age of {}s)",
+                    eventId, occurredAt, maxEventAgeSeconds);
+            aiEvent.setProcessingStatus("REJECTED_STALE");
+            try {
+                aiEventRepository.saveAndFlush(aiEvent);
+                recentEventCache.put(cacheKey, now);
+            } catch (DataIntegrityViolationException dive) {
+                log.info("Concurrent duplicate caught for stale event {}: {}", eventId, dive.getMessage());
+            }
+            return Map.of("success", true, "eventId", eventId, "status", "REJECTED_STALE");
+        }
+
+        // 5. Atomic DB insert catching concurrent unique-key collisions
         try {
             aiEvent = aiEventRepository.saveAndFlush(aiEvent);
+            recentEventCache.put(cacheKey, now);
+            if (recentEventCache.size() > 5000) {
+                Instant cutoff = now.minusSeconds(maxEventAgeSeconds);
+                recentEventCache.entrySet().removeIf(entry -> entry.getValue().isBefore(cutoff));
+            }
         } catch (DataIntegrityViolationException ex) {
+            recentEventCache.put(cacheKey, now);
             log.info("Concurrent duplicate event caught via DB constraint: {} for restaurant {}", eventId, restaurantId);
             Map<String, Object> resp = new HashMap<>();
             resp.put("success", true);
@@ -101,7 +159,7 @@ public class AiEventIngestionService {
 
         final Long eventPk = aiEvent.getAiEventPk();
 
-        // 3. Confidence threshold verification (§1.2 AI emits evidence, not truth)
+        // 6. Confidence threshold verification (§1.2 AI emits evidence, not truth)
         Double confidence = envelope.getConfidence() != null ? envelope.getConfidence() : 0.0;
         if (confidence < 0.70) {
             log.warn("AI Event {} rejected: confidence {} below 0.70 gate threshold", eventId, confidence);

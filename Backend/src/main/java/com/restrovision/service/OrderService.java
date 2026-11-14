@@ -59,10 +59,12 @@ public class OrderService {
         this.notificationService = notificationService;
     }
 
+    @Transactional(readOnly = true)
     public List<Order> getOrders(Long restaurantId) {
         return orderRepository.findByRestaurantIdOrderByCreatedAtDesc(restaurantId);
     }
 
+    @Transactional(readOnly = true)
     public Optional<Order> getOrderById(Long restaurantId, Long orderId) {
         return orderRepository.findByRestaurantIdAndOrderId(restaurantId, orderId);
     }
@@ -230,6 +232,7 @@ public class OrderService {
         return item;
     }
 
+    @Transactional(readOnly = true)
     public List<OrderItem> getKitchenQueue(Long restaurantId, Long stationId) {
         List<String> activeStatuses = List.of("CONFIRMED", "IN_PREPARATION");
         if (stationId != null) {
@@ -238,6 +241,7 @@ public class OrderService {
         return orderItemRepository.findByRestaurantIdAndStatusIn(restaurantId, activeStatuses);
     }
 
+    @Transactional(readOnly = true)
     public List<Map<String, Object>> getDelayedOrders(Long restaurantId) {
         List<OrderItem> items = orderItemRepository.findByRestaurantIdAndStatusIn(restaurantId, List.of("IN_PREPARATION"));
         Instant now = Instant.now();

@@ -12,9 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -56,10 +54,36 @@ public class TableStateMachineService {
         this.notificationService = notificationService;
     }
 
+    @Transactional(readOnly = true)
     public List<TableViewDto> getTableView(Long restaurantId) {
         List<RestaurantTable> tables = tableRepository.findByRestaurantIdOrderByTableCodeAsc(restaurantId);
+        if (tables.isEmpty()) {
+            return Collections.emptyList();
+        }
+
         Instant now = Instant.now();
 
+        // 1. Batch fetch assigned waiters in a single query (eliminates N individual queries)
+        Set<Long> waiterIds = tables.stream()
+                .map(RestaurantTable::getAssignedWaiterId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        Map<Long, Employee> waiterMap = waiterIds.isEmpty() ? Collections.emptyMap() :
+                employeeRepository.findByRestaurantIdAndEmployeeIdIn(restaurantId, waiterIds).stream()
+                        .collect(Collectors.toMap(Employee::getEmployeeId, e -> e, (e1, e2) -> e1));
+
+        // 2. Batch fetch active table sessions in a single query (eliminates N individual queries)
+        Set<Long> sessionIds = tables.stream()
+                .map(RestaurantTable::getCurrentSessionId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        Map<Long, TableSession> sessionMap = sessionIds.isEmpty() ? Collections.emptyMap() :
+                sessionRepository.findByRestaurantIdAndSessionIdIn(restaurantId, sessionIds).stream()
+                        .collect(Collectors.toMap(TableSession::getSessionId, s -> s, (s1, s2) -> s1));
+
+        // 3. Assemble DTOs in memory (0 additional database queries)
         return tables.stream().map(t -> {
             TableViewDto dto = new TableViewDto();
             dto.setTableId(t.getTableId());
@@ -72,13 +96,16 @@ public class TableStateMachineService {
             dto.setAssignedWaiterId(t.getAssignedWaiterId());
 
             if (t.getAssignedWaiterId() != null) {
-                employeeRepository.findByRestaurantIdAndEmployeeId(restaurantId, t.getAssignedWaiterId())
-                        .ifPresent(e -> dto.setAssignedWaiterName(e.getDisplayName()));
+                Employee waiter = waiterMap.get(t.getAssignedWaiterId());
+                if (waiter != null) {
+                    dto.setAssignedWaiterName(waiter.getDisplayName());
+                }
             }
 
             dto.setCurrentSessionId(t.getCurrentSessionId());
             if (t.getCurrentSessionId() != null) {
-                sessionRepository.findByRestaurantIdAndSessionId(restaurantId, t.getCurrentSessionId()).ifPresent(s -> {
+                TableSession s = sessionMap.get(t.getCurrentSessionId());
+                if (s != null) {
                     dto.setSessionSeatedAt(s.getSeatedAt());
                     dto.setSessionAttendedAt(s.getAttendedAt());
                     dto.setPartySizeEst(s.getPartySizeEst());
@@ -99,7 +126,7 @@ public class TableStateMachineService {
                         dto.setWaitingSeconds(0L);
                         dto.setWaitingAlertLevel("NONE");
                     }
-                });
+                }
             }
 
             return dto;

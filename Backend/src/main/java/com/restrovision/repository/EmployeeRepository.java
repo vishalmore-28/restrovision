@@ -10,6 +10,7 @@ import java.util.Optional;
 public interface EmployeeRepository extends JpaRepository<Employee, Long> {
     List<Employee> findByRestaurantId(Long restaurantId);
     Optional<Employee> findByRestaurantIdAndEmployeeId(Long restaurantId, Long employeeId);
+    List<Employee> findByRestaurantIdAndEmployeeIdIn(Long restaurantId, java.util.Collection<Long> employeeIds);
     List<Employee> findByRestaurantIdAndJobRole(Long restaurantId, String jobRole);
     Optional<Employee> findByRestaurantIdAndUserId(Long restaurantId, Long userId);
     Optional<Employee> findByRestaurantIdAndEmployeeCode(Long restaurantId, String employeeCode);
