@@ -19,6 +19,8 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.AuthenticationCredentialsNotFoundException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
@@ -46,7 +48,14 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     private static final Set<String> GLOBAL_ALLOWED_DESTINATIONS = Set.of("/app/ping");
     private static final Pattern TENANT_APP_DESTINATION_PATTERN = Pattern.compile("^/app/restaurants/(\\d+)/(ping|heartbeat)$");
-    private static final Pattern TENANT_TOPIC_DESTINATION_PATTERN = Pattern.compile("^/topic/restaurants/(\\d+)(?:/[a-zA-Z0-9_-]+)+$");
+    private static final Pattern TENANT_TOPIC_DESTINATION_PATTERN = Pattern.compile("^/topic/restaurants/(\\d+)/([a-zA-Z0-9_-]+)$");
+
+    public static final Map<String, Set<String>> TOPIC_ROLE_AUTHORIZATIONS = Map.of(
+            "tables", Set.of("ROLE_OWNER", "ROLE_MANAGER", "ROLE_WAITER", "ROLE_CLEANING"),
+            "orders", Set.of("ROLE_OWNER", "ROLE_MANAGER", "ROLE_WAITER", "ROLE_KITCHEN"),
+            "tasks", Set.of("ROLE_OWNER", "ROLE_MANAGER", "ROLE_WAITER", "ROLE_CLEANING"),
+            "alerts", Set.of("ROLE_OWNER", "ROLE_MANAGER", "ROLE_WAITER", "ROLE_KITCHEN", "ROLE_CLEANING")
+    );
 
     private final JwtTokenProvider tokenProvider;
 
@@ -199,6 +208,26 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
                             log.warn("Blocked cross-tenant WebSocket subscription: client tenant {} attempted to subscribe to {}",
                                     clientRestId, destination);
                             throw new AccessDeniedException("Access denied: Cross-tenant subscription to restaurant " + targetRestId + " is prohibited.");
+                        }
+
+                        String subtopic = matcher.group(2);
+                        Set<String> allowedRoles = TOPIC_ROLE_AUTHORIZATIONS.get(subtopic);
+                        if (allowedRoles == null) {
+                            log.warn("Blocked subscription to unapproved same-tenant topic: {}", destination);
+                            throw new AccessDeniedException("Access denied: Destination '" + destination + "' is not a permitted application topic.");
+                        }
+
+                        Authentication auth = (Authentication) accessor.getUser();
+                        if (auth != null && !auth.getAuthorities().isEmpty()) {
+                            boolean hasRole = auth.getAuthorities().stream()
+                                    .map(GrantedAuthority::getAuthority)
+                                    .anyMatch(allowedRoles::contains);
+
+                            if (!hasRole) {
+                                log.warn("Blocked subscription: User {} lacks required role for topic {}",
+                                        auth.getName(), destination);
+                                throw new AccessDeniedException("Access denied: User lacks authorized role for destination " + destination);
+                            }
                         }
                     } catch (NumberFormatException ex) {
                         throw new AccessDeniedException("Access denied: Malformed restaurant topic destination.");

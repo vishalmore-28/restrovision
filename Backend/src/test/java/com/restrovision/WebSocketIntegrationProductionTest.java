@@ -568,4 +568,170 @@ public class WebSocketIntegrationProductionTest {
             System.out.println("[Live STOMP Test] Verified: Unauthorized SUBSCRIBE to '" + topic + "' blocked, session terminated.");
         }
     }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Invalid same-tenant topics (/admin, /payroll, /sensitive-data) are rejected")
+    void testInvalidSameTenantTopicsBlocked() throws Exception {
+        String tokenTenant1 = tokenProvider.generateAccessToken(1L, 1L, "owner@restrovision.local", Set.of("OWNER"));
+
+        String[] invalidSameTenantTopics = {
+                "/topic/restaurants/1/admin",
+                "/topic/restaurants/1/payroll",
+                "/topic/restaurants/1/sensitive-data",
+                "/topic/restaurants/1/financials",
+                "/topic/restaurants/1/internal"
+        };
+
+        for (String invalidTopic : invalidSameTenantTopics) {
+            StompHeaders connectHeaders = new StompHeaders();
+            connectHeaders.add("Authorization", "Bearer " + tokenTenant1);
+
+            CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+            org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+            stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+                @Override
+                public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                    sessionFuture.complete(session);
+                }
+            });
+
+            StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+            assertThat(session.isConnected()).isTrue();
+
+            session.subscribe(invalidTopic, new StompFrameHandler() {
+                @Override
+                public Type getPayloadType(StompHeaders headers) { return String.class; }
+                @Override
+                public void handleFrame(StompHeaders headers, Object payload) {}
+            });
+
+            Thread.sleep(400);
+            assertThat(session.isConnected()).isFalse();
+            System.out.println("[Live STOMP Test] Verified: Invalid same-tenant topic '" + invalidTopic + "' blocked, session terminated.");
+        }
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Unauthorized role attempting restricted topic is rejected and terminated")
+    void testUnauthorizedRoleAttemptingRestrictedTopicBlocked() throws Exception {
+        // 1. CLEANING role attempting to subscribe to food orders
+        String cleaningToken = tokenProvider.generateAccessToken(2L, 1L, "cleaning@restrovision.local", Set.of("CLEANING"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + cleaningToken);
+
+        CompletableFuture<StompSession> sessionFuture1 = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture1.complete(session);
+            }
+        });
+
+        StompSession session1 = sessionFuture1.get(5, TimeUnit.SECONDS);
+        assertThat(session1.isConnected()).isTrue();
+
+        session1.subscribe("/topic/restaurants/1/orders", new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) { return String.class; }
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {}
+        });
+
+        Thread.sleep(400);
+        assertThat(session1.isConnected()).isFalse();
+        System.out.println("[Live STOMP Test] Verified: CLEANING role attempting to subscribe to /orders blocked, session terminated.");
+
+        // 2. KITCHEN role attempting to subscribe to floor tables
+        String kitchenToken = tokenProvider.generateAccessToken(3L, 1L, "chef@restrovision.local", Set.of("KITCHEN"));
+
+        connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + kitchenToken);
+
+        CompletableFuture<StompSession> sessionFuture2 = new CompletableFuture<>();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture2.complete(session);
+            }
+        });
+
+        StompSession session2 = sessionFuture2.get(5, TimeUnit.SECONDS);
+        assertThat(session2.isConnected()).isTrue();
+
+        session2.subscribe("/topic/restaurants/1/tables", new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) { return String.class; }
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {}
+        });
+
+        Thread.sleep(400);
+        assertThat(session2.isConnected()).isFalse();
+        System.out.println("[Live STOMP Test] Verified: KITCHEN role attempting to subscribe to /tables blocked, session terminated.");
+    }
+
+    @Test
+    @DisplayName("WebSocket Live STOMP: Authorized roles for specific topics succeed and remain connected")
+    void testAuthorizedRolesForSpecificTopicsSucceed() throws Exception {
+        // KITCHEN subscribing to orders
+        String kitchenToken = tokenProvider.generateAccessToken(3L, 1L, "chef@restrovision.local", Set.of("KITCHEN"));
+
+        StompHeaders connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + kitchenToken);
+
+        CompletableFuture<StompSession> sessionFuture = new CompletableFuture<>();
+        org.springframework.web.socket.WebSocketHttpHeaders wsHeaders = new org.springframework.web.socket.WebSocketHttpHeaders();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture.complete(session);
+            }
+        });
+
+        StompSession session = sessionFuture.get(5, TimeUnit.SECONDS);
+        assertThat(session.isConnected()).isTrue();
+
+        session.subscribe("/topic/restaurants/1/orders", new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) { return String.class; }
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {}
+        });
+
+        Thread.sleep(400);
+        assertThat(session.isConnected()).isTrue();
+        System.out.println("[Live STOMP Test] Verified: KITCHEN role subscribing to /orders allowed and active.");
+        session.disconnect();
+
+        // CLEANING subscribing to tasks
+        String cleaningToken = tokenProvider.generateAccessToken(2L, 1L, "cleaning@restrovision.local", Set.of("CLEANING"));
+
+        connectHeaders = new StompHeaders();
+        connectHeaders.add("Authorization", "Bearer " + cleaningToken);
+
+        CompletableFuture<StompSession> sessionFuture2 = new CompletableFuture<>();
+        stompClient.connectAsync(wsUrl, wsHeaders, connectHeaders, new StompSessionHandlerAdapter() {
+            @Override
+            public void afterConnected(StompSession session, StompHeaders connectedHeaders) {
+                sessionFuture2.complete(session);
+            }
+        });
+
+        StompSession session2 = sessionFuture2.get(5, TimeUnit.SECONDS);
+        assertThat(session2.isConnected()).isTrue();
+
+        session2.subscribe("/topic/restaurants/1/tasks", new StompFrameHandler() {
+            @Override
+            public Type getPayloadType(StompHeaders headers) { return String.class; }
+            @Override
+            public void handleFrame(StompHeaders headers, Object payload) {}
+        });
+
+        Thread.sleep(400);
+        assertThat(session2.isConnected()).isTrue();
+        System.out.println("[Live STOMP Test] Verified: CLEANING role subscribing to /tasks allowed and active.");
+        session2.disconnect();
+    }
 }
