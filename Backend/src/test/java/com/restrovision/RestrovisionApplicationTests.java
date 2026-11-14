@@ -27,14 +27,18 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import com.restrovision.domain.AiEvent;
 import com.restrovision.domain.Alert;
+import com.restrovision.domain.CustomerFeedback;
 import com.restrovision.domain.RestaurantTable;
 import com.restrovision.domain.ServiceRequest;
 import com.restrovision.domain.TableSession;
 import com.restrovision.repository.AiEventRepository;
 import com.restrovision.repository.AlertRepository;
+import com.restrovision.repository.CustomerFeedbackRepository;
 import com.restrovision.repository.RestaurantTableRepository;
 import com.restrovision.repository.ServiceRequestRepository;
 import com.restrovision.repository.TableSessionRepository;
+import com.restrovision.security.FeedbackRateLimiterService;
+import com.restrovision.security.LoginRateLimiterService;
 import com.restrovision.service.AiEventIngestionService;
 
 import javax.crypto.Mac;
@@ -93,6 +97,15 @@ class RestrovisionApplicationTests {
 
     @Autowired
     private ServiceRequestRepository serviceRequestRepository;
+
+    @Autowired
+    private CustomerFeedbackRepository feedbackRepository;
+
+    @Autowired
+    private LoginRateLimiterService loginRateLimiterService;
+
+    @Autowired
+    private FeedbackRateLimiterService feedbackRateLimiterService;
 
     @Autowired(required = false)
     private Flyway flyway;
@@ -1113,6 +1126,325 @@ class RestrovisionApplicationTests {
         assertThat(requestsAfterFreshEvent).hasSize(2);
         // The newly created request is OPEN
         assertThat(requestsAfterFreshEvent.stream().anyMatch(r -> "OPEN".equals(r.getStatus()))).isTrue();
+    }
+
+    // =========================================================================
+    // GROUP 3 (P1) REMEDIATION EMPIRICAL TESTS: BUG-008, BUG-009, BUG-013
+    // =========================================================================
+
+    @Test
+    @DisplayName("07o: BUG-008: Login rate limiting triggers 429 after 5 failed attempts per account")
+    void testLoginRateLimitingByAccountWithoutEnumeration() throws Exception {
+        loginRateLimiterService.clear();
+
+        // 1. 5 failed login attempts for manager@restrovision.local
+        for (int i = 0; i < 5; i++) {
+            Map<String, String> creds = Map.of("email", "manager@restrovision.local", "password", "WrongPassword" + i);
+            mockMvc.perform(post("/api/v1/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(creds)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // 2. 6th attempt must trigger HTTP 429 Too Many Requests
+        Map<String, String> creds6 = Map.of("email", "manager@restrovision.local", "password", "Manager@123");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(creds6)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.title").value("Too Many Requests"))
+                .andExpect(jsonPath("$.status").value(429));
+
+        loginRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07p: BUG-008: Rate limiting returns uniform 429 without leaking whether account exists")
+    void testLoginRateLimitingUniformResponseWithoutAccountLeak() throws Exception {
+        loginRateLimiterService.clear();
+
+        // Target a non-existent account
+        String nonExistentUser = "nonexistent.attacker.target@test.com";
+        for (int i = 0; i < 5; i++) {
+            Map<String, String> creds = Map.of("email", nonExistentUser, "password", "Guess" + i);
+            mockMvc.perform(post("/api/v1/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(creds)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // 6th attempt returns identical 429 response structure as an existing account
+        Map<String, String> creds6 = Map.of("email", nonExistentUser, "password", "Guess6");
+        MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(creds6)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.type").value("urn:restrovision:error:rate-limit-exceeded"))
+                .andExpect(jsonPath("$.title").value("Too Many Requests"))
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("Too many login attempts")))
+                .andReturn();
+
+        assertThat(result.getResponse().getHeader("Retry-After")).isNotNull();
+
+        loginRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07q: BUG-008: Successful login resets failed account counter, but preserves IP counter")
+    void testLoginRateLimitResetAfterSuccessfulLogin() throws Exception {
+        loginRateLimiterService.clear();
+
+        // 4 failures (below threshold of 5)
+        for (int i = 0; i < 4; i++) {
+            Map<String, String> creds = Map.of("email", "manager@restrovision.local", "password", "Wrong" + i);
+            mockMvc.perform(post("/api/v1/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(creds)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // 1 successful login -> resets account failures
+        Map<String, String> validCreds = Map.of("email", "manager@restrovision.local", "password", "Manager@123");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(validCreds)))
+                .andExpect(status().isOk());
+
+        // 4 more failures -> allowed because account counter was reset upon success
+        for (int i = 0; i < 4; i++) {
+            Map<String, String> creds = Map.of("email", "manager@restrovision.local", "password", "WrongAgain" + i);
+            mockMvc.perform(post("/api/v1/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(creds)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // However, IP counter now has 8 total failures! 2 more failures reach maxAttemptsPerIp = 10
+        for (int i = 0; i < 2; i++) {
+            Map<String, String> creds = Map.of("email", "chef@restrovision.local", "password", "WrongChef" + i);
+            mockMvc.perform(post("/api/v1/auth/login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(creds)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // 11th request from same IP is blocked at IP-level even for a fresh account
+        Map<String, String> freshAccount = Map.of("email", "waiter@restrovision.local", "password", "WrongWaiter");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(freshAccount)))
+                .andExpect(status().isTooManyRequests());
+
+        loginRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07q2: BUG-008: Forwarded IP headers are only trusted from configured trusted proxies")
+    void testLoginRateLimitingProxyForwardingSpoofProtection() throws Exception {
+        loginRateLimiterService.clear();
+
+        // 1. Attacker sends requests from untrusted external IP (198.51.100.22) attempting to spoof X-Forwarded-For
+        for (int i = 0; i < 10; i++) {
+            Map<String, String> creds = Map.of("email", "random" + i + "@restrovision.local", "password", "BadPass" + i);
+            mockMvc.perform(post("/api/v1/auth/login")
+                            .with(request -> {
+                                request.setRemoteAddr("198.51.100.22");
+                                return request;
+                            })
+                            .header("X-Forwarded-For", "203.0.113." + i)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(creds)))
+                    .andExpect(status().isUnauthorized());
+        }
+
+        // 11th request from same untrusted remoteAddr 198.51.100.22 is blocked because spoofed headers were ignored
+        Map<String, String> creds11 = Map.of("email", "random11@restrovision.local", "password", "BadPass11");
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .with(request -> {
+                            request.setRemoteAddr("198.51.100.22");
+                            return request;
+                        })
+                        .header("X-Forwarded-For", "203.0.113.99")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(creds11)))
+                .andExpect(status().isTooManyRequests());
+
+        loginRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07r: BUG-009: Stored XSS prevention normalizes plain-text and strips malicious tags & scripts")
+    void testCustomerFeedbackStoredXssSanitization() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        // Malicious XSS payload containing <script>, <iframe>, event handlers, and javascript: URLs
+        String xssComment = "<script>alert('XSS')</script>Delicious paneer tikka! <img src=x onerror=alert(1)> and <iframe src='http://evil.com'></iframe> javascript:void(0)";
+        Map<String, Object> req = new HashMap<>();
+        req.put("tableId", 1L);
+        req.put("rating", 5);
+        req.put("comment", xssComment);
+
+        MvcResult result = mockMvc.perform(post("/api/v1/public/feedback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .characterEncoding(StandardCharsets.UTF_8.name())
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        Long feedbackId = root.get("feedbackId").asLong();
+        String savedComment = root.get("commentText").asText();
+
+        // 1. Verify dangerous tags are completely stripped
+        assertThat(savedComment).doesNotContain("<script>");
+        assertThat(savedComment).doesNotContain("</script>");
+        assertThat(savedComment).doesNotContain("<img");
+        assertThat(savedComment).doesNotContain("onerror=");
+        assertThat(savedComment).doesNotContain("<iframe");
+        assertThat(savedComment).doesNotContain("javascript:");
+
+        // 2. Verify legitimate feedback text is intact
+        assertThat(savedComment).contains("Delicious paneer tikka!");
+
+        // 3. Verify database record
+        CustomerFeedback dbFeedback = feedbackRepository.findById(feedbackId).orElseThrow();
+        assertThat(dbFeedback.getCommentText()).isEqualTo(savedComment);
+
+        // 4. Verify no double-HTML encoding (plain text normalized)
+        assertThat(dbFeedback.getCommentText()).doesNotContain("&amp;quot;");
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07s: BUG-009: Feedback preserves quotes, multi-line content, and Marathi/Hindi Unicode")
+    void testCustomerFeedbackPreservesFormattingAndMultilingualUnicode() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        String multilingualComment = "उत्कृष्ट जेवण आणि अप्रतिम चव!\n\"Garlic naan was hot & crisp.\"\nLoved the experience.";
+        Map<String, Object> req = new HashMap<>();
+        req.put("tableId", 2L);
+        req.put("rating", 5);
+        req.put("comment", multilingualComment);
+
+        MvcResult result = mockMvc.perform(post("/api/v1/public/feedback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .characterEncoding(StandardCharsets.UTF_8.name())
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        String savedComment = root.get("commentText").asText();
+
+        // Verify Devnagari Unicode, newlines, and quotes are fully preserved
+        assertThat(savedComment).contains("उत्कृष्ट जेवण आणि अप्रतिम चव!");
+        assertThat(savedComment).contains("\"Garlic naan was hot & crisp.\"");
+        assertThat(savedComment).contains("\n");
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07t: BUG-013: Feedback flooding rejects payload exceeding maximum comment length (1000 chars)")
+    void testFeedbackFloodingRejectionExceedingPayloadLength() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        String excessiveComment = "A".repeat(1001);
+        Map<String, Object> req = Map.of(
+                "tableId", 1L,
+                "rating", 4,
+                "comment", excessiveComment
+        );
+
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("maximum allowed length")));
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07u: BUG-013: Feedback flooding rejects submission for OUT_OF_SERVICE table")
+    void testFeedbackFloodingRejectionOutOfServiceTable() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        RestaurantTable t4 = tableRepository.findByRestaurantIdAndTableId(1L, 4L).orElseThrow();
+        String originalStatus = t4.getStatus();
+        t4.setStatus("OUT_OF_SERVICE");
+        tableRepository.save(t4);
+
+        try {
+            Map<String, Object> req = Map.of(
+                    "tableId", 4L,
+                    "rating", 5,
+                    "comment", "Nice table"
+            );
+
+            mockMvc.perform(post("/api/v1/public/feedback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(req)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("out of service")));
+        } finally {
+            RestaurantTable currentT4 = tableRepository.findByRestaurantIdAndTableId(1L, 4L).orElse(null);
+            if (currentT4 != null) {
+                currentT4.setStatus(originalStatus);
+                tableRepository.save(currentT4);
+            }
+            feedbackRateLimiterService.clear();
+        }
+    }
+
+    @Test
+    @DisplayName("07v: BUG-013: Feedback flooding validates session ID against table ownership")
+    void testFeedbackFloodingSessionIdValidation() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        // Table 1 feedback, but sessionId = 999999 (invalid session)
+        Map<String, Object> req = Map.of(
+                "tableId", 1L,
+                "sessionId", 999999L,
+                "rating", 5,
+                "comment", "Good service"
+        );
+
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("sessionId does not belong to table")));
+
+        feedbackRateLimiterService.clear();
+    }
+
+    @Test
+    @DisplayName("07w: BUG-013: Feedback flooding enforces table cooldown and duplicate detection with 429")
+    void testFeedbackFloodingTableCooldownAndDuplicateBlocked() throws Exception {
+        feedbackRateLimiterService.clear();
+
+        Map<String, Object> req = Map.of(
+                "tableId", 2L,
+                "rating", 5,
+                "comment", "First legitimate feedback"
+        );
+
+        // 1. First submission succeeds
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isOk());
+
+        // 2. Immediate second submission for Table 2 within 15s cooldown returns 429
+        mockMvc.perform(post("/api/v1/public/feedback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(req)))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(jsonPath("$.title").value("Too Many Requests"));
+
+        feedbackRateLimiterService.clear();
     }
 
     @Test

@@ -41,7 +41,7 @@ export default function CamerasZones() {
           loadZones(list[0].cameraId);
         }
       })
-      .catch(() => {});
+      .catch((err) => console.warn('[CamerasZones] Failed to load cameras:', err?.message || err));
 
     loadRecentEvents();
 
@@ -57,13 +57,13 @@ export default function CamerasZones() {
       .then((data) => {
         if (Array.isArray(data)) setZones(data);
       })
-      .catch(() => {});
+      .catch((err) => console.warn('[CamerasZones] Failed to load zones for camera', camId, ':', err?.message || err));
   };
 
   const loadRecentEvents = () => {
     api.getAiEvents()
       .then((data) => setRecentEvents(Array.isArray(data) ? data : []))
-      .catch(() => {})
+      .catch((err) => console.warn('[CamerasZones] Failed to load AI events:', err?.message || err))
       .finally(() => setLoading(false));
   };
 

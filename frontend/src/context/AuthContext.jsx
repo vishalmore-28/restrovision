@@ -74,7 +74,9 @@ export function AuthProvider({ children }) {
     // Purge any lingering legacy demo keys from localStorage so a new user or new URL starts at Login
     try {
       localStorage.removeItem('restrovision_active_user');
-    } catch (_) {}
+    } catch (e) {
+      console.warn('[AuthContext] Unable to clear legacy localStorage user:', e?.message || e);
+    }
 
     // Check active session storage for currently authenticated user in this session
     try {
@@ -82,7 +84,9 @@ export function AuthProvider({ children }) {
       if (sessionUser) {
         return JSON.parse(sessionUser);
       }
-    } catch (_) {}
+    } catch (e) {
+      console.warn('[AuthContext] Unable to parse session user:', e?.message || e);
+    }
 
     return null; // By default, new users / new visits start at the Login page
   });
@@ -100,8 +104,8 @@ export function AuthProvider({ children }) {
           sessionStorage.setItem('restrovision_session_user', JSON.stringify(profile));
           wsService.connect(profile.restaurantId || 1);
         })
-        .catch(() => {
-          // Token invalid or offline
+        .catch((err) => {
+          console.warn('[AuthContext] Current user token validation failed, falling back to unauthenticated:', err?.message || err);
         })
         .finally(() => setLoading(false));
     }
@@ -119,6 +123,7 @@ export function AuthProvider({ children }) {
       wsService.connect(res.user?.restaurantId || 1);
       return res.user;
     } catch (err) {
+      console.warn('[AuthContext] Online login failed, activating fallback demo profile for role session:', err?.message || err);
       const matched = PRESET_USERS.find((p) => p.email === email) || PRESET_USERS[1];
       const offlineUser = {
         userId: 2,
@@ -142,7 +147,9 @@ export function AuthProvider({ children }) {
       localStorage.removeItem('restrovision_active_user');
       localStorage.removeItem('restrovision_token');
       sessionStorage.removeItem('restrovision_session_user');
-    } catch (_) {}
+    } catch (e) {
+      console.warn('[AuthContext] Failed to clear storage on logout:', e?.message || e);
+    }
     wsService.disconnect();
   };
 
@@ -156,7 +163,8 @@ export function AuthProvider({ children }) {
       setUser(res.user);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
       wsService.connect(res.user?.restaurantId || 1);
-    } catch (_) {
+    } catch (err) {
+      console.warn('[AuthContext] Quick role switch online login failed, activating local preset profile:', err?.message || err);
       const offlineUser = {
         userId: 2,
         email: preset.email,

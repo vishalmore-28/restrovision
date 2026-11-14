@@ -24,6 +24,7 @@ export default function AlertCenter() {
   const [falseAlarmModal, setFalseAlarmModal] = useState(null);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   const loadAlerts = () => {
     const fetcher = filter === 'ACTIVE' ? api.getActiveAlerts() : api.getAllAlerts();
@@ -31,7 +32,9 @@ export default function AlertCenter() {
       .then((data) => {
         if (Array.isArray(data) && data.length > 0) setAlerts(data);
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn('[AlertCenter] Failed to fetch alerts:', err?.message || err);
+      });
   };
 
   useEffect(() => {
@@ -50,31 +53,43 @@ export default function AlertCenter() {
   const handleAcknowledge = async (id) => {
     try {
       await api.acknowledgeAlert(id);
-    } catch (_) {}
-    setAlerts((prev) => prev.map((a) => (a.alertId === id ? { ...a, status: 'ACKNOWLEDGED' } : a)));
-    setSuccessMsg('Alert acknowledged.');
-    setTimeout(() => setSuccessMsg(''), 4000);
+      setAlerts((prev) => prev.map((a) => (a.alertId === id ? { ...a, status: 'ACKNOWLEDGED' } : a)));
+      setSuccessMsg('Alert acknowledged.');
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      console.error('[AlertCenter] Failed to acknowledge alert:', err);
+      setErrorMsg('Failed to acknowledge alert. Please try again.');
+      setTimeout(() => setErrorMsg(''), 4000);
+    }
   };
 
   const handleResolve = async (id) => {
     try {
       await api.resolveAlert(id);
-    } catch (_) {}
-    setAlerts((prev) => prev.filter((a) => a.alertId !== id));
-    setSuccessMsg('Alert resolved successfully.');
-    setTimeout(() => setSuccessMsg(''), 4000);
+      setAlerts((prev) => prev.filter((a) => a.alertId !== id));
+      setSuccessMsg('Alert resolved successfully.');
+      setTimeout(() => setSuccessMsg(''), 4000);
+    } catch (err) {
+      console.error('[AlertCenter] Failed to resolve alert:', err);
+      setErrorMsg('Failed to resolve alert. Please try again.');
+      setTimeout(() => setErrorMsg(''), 4000);
+    }
   };
 
   const handleFalseAlarm = async () => {
     if (!falseAlarmModal) return;
     try {
       await api.markFalseAlarm(falseAlarmModal.alertId, feedbackComment || 'False alarm marked by staff');
-    } catch (_) {}
-    setAlerts((prev) => prev.filter((a) => a.alertId !== falseAlarmModal.alertId));
-    setFalseAlarmModal(null);
-    setFeedbackComment('');
-    setSuccessMsg('False alarm recorded into AI_FEEDBACK_LABELS. Hard negative added to training pipeline!');
-    setTimeout(() => setSuccessMsg(''), 5000);
+      setAlerts((prev) => prev.filter((a) => a.alertId !== falseAlarmModal.alertId));
+      setFalseAlarmModal(null);
+      setFeedbackComment('');
+      setSuccessMsg('False alarm recorded into AI_FEEDBACK_LABELS. Hard negative added to training pipeline!');
+      setTimeout(() => setSuccessMsg(''), 5000);
+    } catch (err) {
+      console.error('[AlertCenter] Failed to mark false alarm:', err);
+      setErrorMsg('Failed to submit false alarm feedback. Please try again.');
+      setTimeout(() => setErrorMsg(''), 4000);
+    }
   };
 
   const getPriorityBadge = (priority) => {
@@ -199,6 +214,19 @@ export default function AlertCenter() {
         >
           <Sparkles className="w-4 h-4 shrink-0" />
           <span className="font-semibold">{successMsg}</span>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div
+          className="p-3.5 rounded-xl border text-xs flex items-center gap-2.5 shadow-sm"
+          style={{
+            backgroundColor: 'var(--status-critical-bg)',
+            borderColor: 'var(--status-critical-border)',
+            color: 'var(--status-critical)',
+          }}
+        >
+          <span className="font-semibold">{errorMsg}</span>
         </div>
       )}
 

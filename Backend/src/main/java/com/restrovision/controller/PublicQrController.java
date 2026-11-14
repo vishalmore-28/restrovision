@@ -8,11 +8,18 @@ import com.restrovision.repository.CustomerFeedbackRepository;
 import com.restrovision.repository.RestaurantTableRepository;
 import com.restrovision.repository.ServiceRequestRepository;
 import com.restrovision.repository.TableSessionRepository;
+import com.restrovision.security.FeedbackRateLimiterService;
+import com.restrovision.security.HtmlSanitizer;
+import com.restrovision.security.LoginRateLimiterService;
 import com.restrovision.service.AlertService;
 import com.restrovision.service.NotificationService;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -26,6 +33,8 @@ public class PublicQrController {
     private final CustomerFeedbackRepository feedbackRepository;
     private final AlertService alertService;
     private final NotificationService notificationService;
+    private final FeedbackRateLimiterService feedbackRateLimiter;
+    private final LoginRateLimiterService loginRateLimiterService;
 
     public PublicQrController(
             RestaurantTableRepository tableRepository,
@@ -33,13 +42,17 @@ public class PublicQrController {
             ServiceRequestRepository serviceRequestRepository,
             CustomerFeedbackRepository feedbackRepository,
             AlertService alertService,
-            NotificationService notificationService) {
+            NotificationService notificationService,
+            FeedbackRateLimiterService feedbackRateLimiter,
+            LoginRateLimiterService loginRateLimiterService) {
         this.tableRepository = tableRepository;
         this.sessionRepository = sessionRepository;
         this.serviceRequestRepository = serviceRequestRepository;
         this.feedbackRepository = feedbackRepository;
         this.alertService = alertService;
         this.notificationService = notificationService;
+        this.feedbackRateLimiter = feedbackRateLimiter;
+        this.loginRateLimiterService = loginRateLimiterService;
     }
 
     @GetMapping("/qr/{token}/status")
@@ -109,13 +122,13 @@ public class PublicQrController {
     }
 
     @PostMapping("/feedback")
-    public ResponseEntity<CustomerFeedback> submitFeedback(@RequestBody CustomerFeedbackRequest request) {
-        // P0 Validation: Rating must be strictly between 1 and 5
-        if (request.getRating() == null || request.getRating() < 1 || request.getRating() > 5) {
-            throw new IllegalArgumentException("Invalid rating: " + request.getRating() + ". Rating must be an integer between 1 and 5.");
+    public ResponseEntity<?> submitFeedback(@RequestBody CustomerFeedbackRequest request, HttpServletRequest httpRequest) {
+        // 1. Rating validation: Rating must be strictly between 1 and 5
+        if (request == null || request.getRating() == null || request.getRating() < 1 || request.getRating() > 5) {
+            throw new IllegalArgumentException("Invalid rating. Rating must be an integer between 1 and 5.");
         }
 
-        // P0 Multi-Tenancy Fix: Derive restaurantId from verified table, NEVER hardcode to 1!
+        // 2. Table validation & ownership
         Long tableId = request.getTableId();
         if (tableId == null) {
             throw new IllegalArgumentException("Table ID is required to associate verified feedback.");
@@ -123,17 +136,54 @@ public class PublicQrController {
 
         RestaurantTable table = tableRepository.findById(tableId)
                 .orElseThrow(() -> new IllegalArgumentException("Table not found: " + tableId));
+
+        if ("OUT_OF_SERVICE".equalsIgnoreCase(table.getStatus())) {
+            throw new IllegalArgumentException("Cannot submit feedback for a table that is out of service: " + tableId);
+        }
+
         Long restaurantId = table.getRestaurantId();
+
+        // 3. Session validation (if sessionId provided)
+        if (request.getSessionId() != null) {
+            sessionRepository.findByRestaurantIdAndSessionId(restaurantId, request.getSessionId())
+                    .filter(s -> table.getTableId().equals(s.getTableId()))
+                    .orElseThrow(() -> new IllegalArgumentException("Provided sessionId does not belong to table " + tableId));
+        }
+
+        // 4. Payload size limit (BUG-013)
+        String rawComment = request.getComment();
+        if (rawComment != null && rawComment.length() > feedbackRateLimiter.getMaxCommentLength()) {
+            throw new IllegalArgumentException("Feedback comment exceeds maximum allowed length of " + feedbackRateLimiter.getMaxCommentLength() + " characters.");
+        }
+
+        // 5. Plain text sanitization (BUG-009)
+        String cleanComment = HtmlSanitizer.sanitizeComment(rawComment);
+
+        // 6. Anti-Flooding & Abuse Protection (BUG-013)
+        String clientIp = loginRateLimiterService.resolveClientIp(httpRequest);
+        FeedbackRateLimiterService.FeedbackLimitResult limit = feedbackRateLimiter.checkLimits(
+                clientIp, tableId, request.getRating(), cleanComment);
+        if (limit.isBlocked()) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                    HttpStatus.TOO_MANY_REQUESTS, limit.getReason());
+            problem.setType(URI.create("urn:restrovision:error:feedback-rate-limit"));
+            problem.setTitle("Too Many Requests");
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .header("Retry-After", String.valueOf(limit.getRetryAfterSeconds()))
+                    .body(problem);
+        }
+
+        feedbackRateLimiter.recordSubmission(clientIp, tableId, request.getRating(), cleanComment);
 
         CustomerFeedback feedback = new CustomerFeedback();
         feedback.setRestaurantId(restaurantId);
         feedback.setTableId(table.getTableId());
         feedback.setSessionId(request.getSessionId());
         feedback.setRating(request.getRating());
-        feedback.setCommentText(request.getComment());
+        feedback.setCommentText(cleanComment);
 
         // Simple sentiment & category classification (M10 baseline)
-        String comment = request.getComment() != null ? request.getComment().toLowerCase() : "";
+        String commentLower = cleanComment != null ? cleanComment.toLowerCase() : "";
         if (request.getRating() >= 4) {
             feedback.setSentiment("POSITIVE");
         } else if (request.getRating() <= 2) {
@@ -142,11 +192,11 @@ public class PublicQrController {
             feedback.setSentiment("NEUTRAL");
         }
 
-        if (comment.contains("food") || comment.contains("taste") || comment.contains("delicious") || comment.contains("spicy")) {
+        if (commentLower.contains("food") || commentLower.contains("taste") || commentLower.contains("delicious") || commentLower.contains("spicy")) {
             feedback.setCategory("FOOD_QUALITY");
-        } else if (comment.contains("slow") || comment.contains("quick") || comment.contains("wait") || comment.contains("fast")) {
+        } else if (commentLower.contains("slow") || commentLower.contains("quick") || commentLower.contains("wait") || commentLower.contains("fast")) {
             feedback.setCategory("SERVICE_SPEED");
-        } else if (comment.contains("clean") || comment.contains("dirty") || comment.contains("table")) {
+        } else if (commentLower.contains("clean") || commentLower.contains("dirty") || commentLower.contains("table")) {
             feedback.setCategory("CLEANLINESS");
         } else {
             feedback.setCategory("AMBIENCE");

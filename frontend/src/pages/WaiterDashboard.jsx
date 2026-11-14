@@ -34,13 +34,23 @@ export default function WaiterDashboard() {
   const [requests, setRequests] = useState(INITIAL_REQUESTS);
   const [readyOrders, setReadyOrders] = useState(INITIAL_READY_ORDERS);
   const [loading, setLoading] = useState(false);
+  const [actionError, setActionError] = useState('');
+
+  const flashError = (msg) => {
+    setActionError(msg);
+    setTimeout(() => setActionError(''), 4000);
+  };
 
   const loadData = () => {
-    api.getWorkload().then((data) => { if (Array.isArray(data) && data.length > 0) setWorkloads(data); }).catch(() => {});
-    api.getServiceRequests().then((data) => { if (Array.isArray(data) && data.length > 0) setRequests(data); }).catch(() => {});
+    api.getWorkload()
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setWorkloads(data); })
+      .catch((err) => console.warn('[WaiterDashboard] Failed to fetch workload:', err?.message || err));
+    api.getServiceRequests()
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setRequests(data); })
+      .catch((err) => console.warn('[WaiterDashboard] Failed to fetch service requests:', err?.message || err));
     api.getOrders()
       .then((all) => { if (Array.isArray(all)) setReadyOrders(all.filter((o) => o.status === 'READY')); })
-      .catch(() => {})
+      .catch((err) => console.warn('[WaiterDashboard] Failed to fetch orders:', err?.message || err))
       .finally(() => setLoading(false));
   };
 
@@ -59,22 +69,31 @@ export default function WaiterDashboard() {
   const handleAcknowledgeRequest = async (id) => {
     try {
       await api.acknowledgeServiceRequest(id);
-    } catch (_) {}
-    setRequests((prev) => prev.map((r) => (r.requestId === id ? { ...r, status: 'ACKNOWLEDGED' } : r)));
+      setRequests((prev) => prev.map((r) => (r.requestId === id ? { ...r, status: 'ACKNOWLEDGED' } : r)));
+    } catch (err) {
+      console.error('[WaiterDashboard] Failed to acknowledge service request:', err);
+      flashError('Failed to acknowledge request. Please try again.');
+    }
   };
 
   const handleCompleteRequest = async (id) => {
     try {
       await api.completeServiceRequest(id);
-    } catch (_) {}
-    setRequests((prev) => prev.filter((r) => r.requestId !== id));
+      setRequests((prev) => prev.filter((r) => r.requestId !== id));
+    } catch (err) {
+      console.error('[WaiterDashboard] Failed to complete service request:', err);
+      flashError('Failed to complete request. Please try again.');
+    }
   };
 
   const handleDeliverOrder = async (orderId) => {
     try {
       await api.deliverOrder(orderId);
-    } catch (_) {}
-    setReadyOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+      setReadyOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+    } catch (err) {
+      console.error('[WaiterDashboard] Failed to deliver order:', err);
+      flashError(`Failed to mark order #${orderId} as delivered. Please try again.`);
+    }
   };
 
   const openRequests = requests.filter((r) => r.status === 'OPEN' || r.status === 'ACKNOWLEDGED');
@@ -100,6 +119,19 @@ export default function WaiterDashboard() {
           Formula-weighted floor assignments: tables (1.0x), pending requests (1.5x), ready orders (1.0x), open tasks (0.5x).
         </p>
       </div>
+
+      {actionError && (
+        <div
+          className="p-3.5 rounded-xl border text-xs flex items-center gap-2.5 shadow-sm"
+          style={{
+            backgroundColor: 'var(--status-critical-bg)',
+            borderColor: 'var(--status-critical-border)',
+            color: 'var(--status-critical)',
+          }}
+        >
+          <span className="font-semibold">{actionError}</span>
+        </div>
+      )}
 
       {/* Waiter Workload Index Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">

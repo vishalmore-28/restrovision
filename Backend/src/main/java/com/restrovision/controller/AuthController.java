@@ -7,10 +7,13 @@ import com.restrovision.repository.EmployeeRepository;
 import com.restrovision.repository.UserRepository;
 import com.restrovision.security.CustomUserDetails;
 import com.restrovision.security.JwtTokenProvider;
+import com.restrovision.security.LoginRateLimiterService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -28,22 +31,50 @@ public class AuthController {
     private final JwtTokenProvider tokenProvider;
     private final UserRepository userRepository;
     private final EmployeeRepository employeeRepository;
+    private final LoginRateLimiterService loginRateLimiterService;
 
     public AuthController(
             AuthenticationManager authenticationManager,
             JwtTokenProvider tokenProvider,
             UserRepository userRepository,
-            EmployeeRepository employeeRepository) {
+            EmployeeRepository employeeRepository,
+            LoginRateLimiterService loginRateLimiterService) {
         this.authenticationManager = authenticationManager;
         this.tokenProvider = tokenProvider;
         this.userRepository = userRepository;
         this.employeeRepository = employeeRepository;
+        this.loginRateLimiterService = loginRateLimiterService;
     }
 
     @PostMapping("/login")
-    public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest request) {
-        Authentication authentication = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(request.getEmail(), request.getPassword()));
+    public ResponseEntity<?> login(@RequestBody LoginRequest request, HttpServletRequest httpRequest) {
+        String rawEmail = request != null ? request.getEmail() : "";
+        String normalizedEmail = loginRateLimiterService.normalizeAccount(rawEmail);
+        String clientIp = loginRateLimiterService.resolveClientIp(httpRequest);
+
+        LoginRateLimiterService.RateLimitResult limit = loginRateLimiterService.checkLimit(clientIp, normalizedEmail);
+        if (limit.isBlocked()) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                    HttpStatus.TOO_MANY_REQUESTS,
+                    "Too many login attempts. Please try again in " + limit.getRetryAfterSeconds() + " seconds."
+            );
+            problem.setType(URI.create("urn:restrovision:error:rate-limit-exceeded"));
+            problem.setTitle("Too Many Requests");
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                    .header("Retry-After", String.valueOf(limit.getRetryAfterSeconds()))
+                    .body(problem);
+        }
+
+        Authentication authentication;
+        try {
+            authentication = authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(rawEmail, request != null ? request.getPassword() : ""));
+        } catch (BadCredentialsException ex) {
+            loginRateLimiterService.recordFailure(clientIp, normalizedEmail);
+            throw ex;
+        }
+
+        loginRateLimiterService.recordSuccess(clientIp, normalizedEmail);
 
         CustomUserDetails userDetails = (CustomUserDetails) authentication.getPrincipal();
         User user = userRepository.findById(userDetails.getUserId())

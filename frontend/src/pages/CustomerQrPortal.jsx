@@ -20,16 +20,18 @@ export default function CustomerQrPortal() {
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
 
   const fetchStatus = () => {
     api.getQrStatus(tableToken)
       .then(setQrStatus)
-      .catch((err) => console.error(err));
+      .catch((err) => console.warn('[CustomerQrPortal] Failed to fetch QR status:', err?.message || err));
   };
 
   useEffect(() => {
     fetchStatus();
     setFeedbackSent(false);
+    setFeedbackError('');
   }, [tableToken]);
 
   const handleCall = async (type) => {
@@ -37,8 +39,9 @@ export default function CustomerQrPortal() {
     try {
       const res = await api.callWaiterFromQr(tableToken, type);
       setCallMessage(res?.message || `Request '${type}' received! Waiter on the way.`);
-    } catch (_) {
-      setCallMessage(`Request '${type}' received! Waiter on the way.`);
+    } catch (err) {
+      console.error('[CustomerQrPortal] Failed to call waiter:', err);
+      setCallMessage(err?.response?.data?.detail || 'Unable to alert waiter. Please try again or wave to staff.');
     } finally {
       setCalling(false);
       setTimeout(() => setCallMessage(''), 5000);
@@ -54,9 +57,15 @@ export default function CustomerQrPortal() {
         rating,
         comment,
       });
-    } catch (_) {}
-    setFeedbackSent(true);
-    setComment('');
+      setFeedbackSent(true);
+      setComment('');
+      setFeedbackError('');
+    } catch (err) {
+      console.error('[CustomerQrPortal] Feedback submission failed:', err);
+      const detail = err?.response?.data?.detail || err?.message || 'Failed to submit feedback. Please try again.';
+      setFeedbackError(detail);
+      setTimeout(() => setFeedbackError(''), 6000);
+    }
   };
 
   return (
@@ -255,6 +264,18 @@ export default function CustomerQrPortal() {
               </div>
             ) : (
               <form onSubmit={handleFeedbackSubmit} className="space-y-2.5">
+                {feedbackError && (
+                  <div
+                    className="p-2.5 rounded-xl text-center text-xs border"
+                    style={{
+                      backgroundColor: 'var(--status-critical-bg)',
+                      borderColor: 'var(--status-critical-border)',
+                      color: 'var(--status-critical)',
+                    }}
+                  >
+                    {feedbackError}
+                  </div>
+                )}
                 <div className="flex items-center justify-center gap-2 py-1">
                   {[1, 2, 3, 4, 5].map((star) => (
                     <button

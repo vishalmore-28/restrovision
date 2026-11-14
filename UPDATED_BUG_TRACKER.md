@@ -1,23 +1,23 @@
 # RESTROVISION Master Defect & Vulnerability Register (Updated)
-**Document ID**: `TRACKER-DEFECTS-20261114-REV3`  
+**Document ID**: `TRACKER-DEFECTS-20261114-REV4`  
 **Application Target**: RESTROVISION v2.0  
 **Branch**: `feature/production-hardening`  
-**Last Updated**: 2026-11-14T14:38:00+05:30  
+**Last Updated**: 2026-11-14T15:35:00+05:30  
 **Lead Auditor**: Principal Software QA Engineer & Security Auditor  
 
 ---
 
 ## 1. Defect Remediation Status Summary
 
-| Total Defects | Resolved (Group 1 & 2) | Pending (Group 3-5) | Critical Unresolved | Release Verdict |
+| Total Defects | Resolved (Group 1, 2 & 3) | Pending (Group 4-5) | Critical Unresolved | Release Verdict |
 | :---: | :---: | :---: | :---: | :---: |
-| **23** | **10** | **13** | **0** | **GROUP 1 & GROUP 2 REMEDIATION COMPLETED & VERIFIED** |
+| **23** | **14** | **9** | **0** | **GROUP 1, 2 & 3 REMEDIATION COMPLETED & VERIFIED** |
 
 ### Severity Distribution
 - **CRITICAL**: 3 Total | **3 Resolved (100%)** | 0 Remaining
-- **HIGH**: 12 Total | **7 Resolved (58.3%)** | 5 Remaining
-- **MEDIUM**: 7 Total | 0 Resolved | 7 Remaining
-- **LOW**: 1 Total | 0 Resolved | 1 Remaining
+- **HIGH**: 12 Total | **10 Resolved (83.3%)** | 2 Remaining (BUG-021, BUG-022)
+- **MEDIUM**: 7 Total | **1 Resolved (14.3%)** | 6 Remaining (BUG-014, BUG-015, BUG-016, BUG-018, BUG-020, BUG-023)
+- **LOW**: 1 Total | 0 Resolved | 1 Remaining (BUG-019)
 
 ---
 
@@ -32,12 +32,12 @@
 | **BUG-005** | **HIGH** | Security | `AiEventIngestionService.java` | Zero timestamp freshness validation (Event replay) | **RESOLVED & VERIFIED** | Added timestamp freshness check: events > 2h old rejected as `REJECTED_STALE`; events > 10m ahead rejected as `REJECTED_CLOCK_SKEW`. Accommodates legitimate outbox backoff retries and device clock drift. Added in-memory deduplication cache with TTL and bounded eviction, backed by authoritative DB unique constraint `uq_ai_event`. Verified HMAC precedes processing, concurrent duplicates atomically caught by DB unique constraint, and tampered UUIDs rejected with 401. Verified failure-path consistency and retry recovery (Tests 1 & 2) and service-request idempotency across OPEN, ACKNOWLEDGED, COMPLETED, DISMISSED (Test 3). Verified via tests 07b–07n in `RestrovisionApplicationTests`. |
 | **BUG-006** | **HIGH** | Performance | `TableStateMachineService.java`| $1 + 2N$ database query cascade on table broadcasts | **RESOLVED & VERIFIED** | Replaced per-table loops in `getTableView` with batch `IN (:ids)` queries on `EmployeeRepository` and `TableSessionRepository`. Reduced SQL queries from 21 (10 tables) and 101 (50 tables) to at most 3 queries (97% reduction). Empirically verified via `Group2PerformanceAndRegressionTest`. |
 | **BUG-007** | **HIGH** | Performance | `Order.java:43` | `FetchType.EAGER` on `items` collection (Heap memory risk) | **RESOLVED & VERIFIED** | Refactored `Order.items` to `FetchType.LAZY`. Added targeted `@EntityGraph(attributePaths = {"items"})` on order retrieval queries and `@EntityGraph(attributePaths = {"order"})` on order items. Added `@Transactional(readOnly = true)`. Verified zero `LazyInitializationException` and clean serialization across all controllers. |
-| **BUG-008** | **HIGH** | Security | `AuthController.java` | No brute-force rate limiting or account lockout on login | PENDING (Group 3) | Scope of Group 3 (Stored XSS, rate limiting, UI error handling). |
-| **BUG-009** | **HIGH** | Security | `PublicQrController.java` | Stored XSS in customer feedback comments | PENDING (Group 3) | Scope of Group 3. |
-| **BUG-010** | **HIGH** | Code Quality | `src/pages/*.jsx` (17 places) | Empty catch blocks silently swallow API mutation failures | PENDING (Group 3) | Scope of Group 3. |
+| **BUG-008** | **HIGH** | Security | `AuthController.java` | No brute-force rate limiting or account lockout on login | **RESOLVED & VERIFIED** | Implemented `LoginRateLimiterService` with dual-dimension sliding window tracking IP (10/min) and Account (5/min). IP failures do not clear upon successful login to defeat alternation attacks. Uniform RFC 7807 429 response (`Retry-After` header) returned without account enumeration. Trusted proxy check validates `X-Forwarded-For` only from configured loopback/proxies (`127.0.0.1, ::1`). Tests 07o, 07p, 07q, 07q2 passing. |
+| **BUG-009** | **HIGH** | Security | `PublicQrController.java` | Stored XSS in customer feedback comments | **RESOLVED & VERIFIED** | Implemented `HtmlSanitizer` normalizing input to safe plain text by stripping HTML tags, scripts, iframes, event handlers, and dangerous protocols while preserving natural quotes (`"`, `'`), ampersands, newlines, and multilingual Unicode (Hindi/Marathi). Zero double-encoding. Verified via tests 07r, 07s. |
+| **BUG-010** | **HIGH** | Code Quality | `src/pages/*.jsx` (17 places) | Empty catch blocks silently swallow API mutation failures | **RESOLVED & VERIFIED** | Remediated all empty catch blocks across `AlertCenter.jsx`, `FloorPlan.jsx`, `KitchenKds.jsx`, `WaiterDashboard.jsx`, `CleaningTasks.jsx`, `CamerasZones.jsx`, `CustomerQrPortal.jsx`, `Navbar.jsx`, `AuthContext.jsx`, and `api.js`. User-facing action mutations display contextual error feedback without disruptive native popups; background polling uses diagnostic logging; zero credentials exposed. Verified via zero remaining empty catches and clean Vite build. |
 | **BUG-011** | **HIGH** | DevOps | `docker-compose.yml` | Case-sensitivity path mismatch (`./backend` vs `./Backend`) | **RESOLVED & VERIFIED** | Fixed path casing in `docker-compose.yml` to `./Backend`. |
 | **BUG-012** | **HIGH** | Database | `pom.xml`, `application.yml` | Missing Flyway with `ddl-auto: validate` enabled | **RESOLVED & VERIFIED** | Added `flyway-core`, `flyway-database-oracle`, `V1__init_core_schema.sql` (33 tables matching JPA entities), and `baseline-version: 1` committed in `5ccd1a5`. Live Oracle marked pending DBA setup. |
-| **BUG-013** | **MEDIUM** | Security | `PublicQrController.java` | Unauthenticated feedback flooding / storage DoS | PENDING (Group 3) | Scope of Group 3. |
+| **BUG-013** | **MEDIUM** | Security | `PublicQrController.java` | Unauthenticated feedback flooding / storage DoS | **RESOLVED & VERIFIED** | Implemented `FeedbackRateLimiterService` and request validation in `PublicQrController`. Limits comments to 1000 characters, IP limit to 10 submissions/5 min, 15-second table cooldown, and 60-second duplicate submission rejection. Validates table existence, rejects `OUT_OF_SERVICE` tables, and validates table session ownership. Tests 07t, 07u, 07v, 07w passing. |
 | **BUG-014** | **MEDIUM** | Security | `src/services/api.js` | JWT tokens stored in browser `localStorage` | PENDING (Group 4) | Scope of Group 4. |
 | **BUG-015** | **MEDIUM** | Architecture| `src/pages/Analytics.jsx` | 1,015-line God component containing embedded chart logic | PENDING (Group 4) | Scope of Group 4. |
 | **BUG-016** | **MEDIUM** | Database | `TableSession.java`, `StaffTask.java` | Missing `@Version` optimistic locking on mutable entities | PENDING (Group 4) | Scope of Group 4. |
@@ -144,3 +144,58 @@
   - Added `@Transactional(readOnly = true)` to read operations in `OrderService` and `AnalyticsService`.
   - `testOrderLazyLoadingAndEntityGraph`: Verified that status queries do NOT load items (`isLoaded == false`), while order listings load items via `@EntityGraph` (`isLoaded == true`).
   - `testSerializationWithoutLazyInitializationException`: Verified clean JSON serialization for Orders, Single Order, KDS Queue, Delayed Orders, and Analytics Overview with zero `LazyInitializationException`.
+
+---
+
+## 5. Detailed Verification Notes for Group 3 Resolutions
+
+### BUG-008 (Authentication Login Rate Limiting & Account Lockout Protection)
+- **Status**: **RESOLVED & VERIFIED**
+- **Verification Evidence**:
+  - Implemented `LoginRateLimiterService` enforcing configurable sliding windows for per-account (`max-attempts-per-account: 5`) and per-IP (`max-attempts-per-ip: 10`) brute-force defense.
+  - `testLoginRateLimitingByAccountWithoutEnumeration`: 5 invalid login attempts for an account pass to authentication; 6th attempt immediately returns HTTP 429 Too Many Requests with RFC 7807 `ProblemDetail` payload.
+  - `testLoginRateLimitingUniformResponseWithoutAccountLeak`: Targeting a non-existent account returns the identical HTTP 429 structure, detail text, and `Retry-After` header as an existing account, completely preventing account enumeration.
+  - `testLoginRateLimitResetAfterSuccessfulLogin`: A successful login resets the account failure counter, but does NOT reset the IP failure counter. This strictly prevents alternation attacks where an attacker alternates between valid and invalid logins to exhaust account passwords without triggering IP lockout.
+  - `testLoginRateLimitingProxyForwardingSpoofProtection`: Verifies that `X-Forwarded-For` is only resolved when `remoteAddr` matches explicitly trusted proxies (`127.0.0.1, ::1`). Untrusted remote addresses cannot bypass IP throttling by injecting spoofed forwarding headers.
+  - Integration: `AuthController.java` checks limits before authentication, records failures, and resets account counters upon success.
+
+### BUG-009 (Stored XSS Neutralization in Customer Feedback)
+- **Status**: **RESOLVED & VERIFIED**
+- **Verification Evidence**:
+  - Created `HtmlSanitizer` implementing plain-text normalization.
+  - Strips `<script>`, `<iframe>`, `<object>`, `<embed>`, `<style>`, HTML tags (`<... />`), event handlers (`onload=`, `onerror=`), and dangerous URI schemes (`javascript:`, `vbscript:`, `data:`).
+  - Preserves natural punctuation and formatting: ASCII and Unicode quotes (`"`, `'`), ampersands (`&`), newlines (`\n`), and non-Latin character sets (Devanagari / Marathi / Hindi: `उत्कृष्ट जेवण आणि अप्रतिम चव!`).
+  - Zero double-HTML entity encoding (does not emit `&amp;quot;` or `&amp;lt;`), enabling natural plain-text storage and safe React DOM text rendering.
+  - `testCustomerFeedbackStoredXssSanitization`: Tested aggressive XSS payloads containing script blocks, img onerror handlers, iframes, and javascript links. All executable elements stripped, legitimate feedback text preserved, DB record verified clean.
+  - `testCustomerFeedbackPreservesFormattingAndMultilingualUnicode`: Verified Devanagari multilingual text, double quotes, and line breaks are fully preserved.
+
+### BUG-010 (Frontend Empty Catch Block Elimination & Error Propagation)
+- **Status**: **RESOLVED & VERIFIED**
+- **Verification Evidence**:
+  - Systematic audit eliminated all 17 empty catch blocks across `frontend/src`:
+    - `AlertCenter.jsx`: Added `errorMsg` banner for failed acknowledge, resolve, and false alarm submissions. Added warning logs for polling.
+    - `FloorPlan.jsx`: Added `actionError` banner for failed table attend, seat party, and manual status override operations. Added warning logs for polling.
+    - `KitchenKds.jsx`: Added `kdsError` banner for order prep, ready mark, and item status update failures. Added warning logs for polling.
+    - `WaiterDashboard.jsx`: Added `actionError` banner for request acknowledge, complete, and order deliver operations. Added warning logs for polling.
+    - `CleaningTasks.jsx`: Added `errorMsg` banner for task start and complete operations. Added warning logs for polling.
+    - `CamerasZones.jsx`: Added diagnostic warning logs for camera and zone fetching.
+    - `CustomerQrPortal.jsx`: Replaced silent failure swallows with customer-facing `feedbackError` display (handling 400 validation and 429 flooding) and error messaging on waiter calling.
+    - `Navbar.jsx`: Added diagnostic warning on background alert fetch.
+    - `AuthContext.jsx`: Added sanitized diagnostic warnings without token/credential leakage; maintains graceful offline fallback.
+    - `api.js`: Replaced non-JSON error parse swallow with diagnostic logging.
+  - Verified zero empty catch blocks remaining across `frontend/src`.
+  - Vite production build (`npm run build`) succeeded with 0 errors (1,610 modules transformed, 324.28 kB bundle).
+
+### BUG-013 (Customer Feedback Flooding & Storage DoS Protection)
+- **Status**: **RESOLVED & VERIFIED**
+- **Verification Evidence**:
+  - Created `FeedbackRateLimiterService` enforcing multi-layered DoS limits:
+    - 1,000 character maximum payload length check (`testFeedbackFloodingRejectionExceedingPayloadLength`).
+    - 10 submissions per 5-minute sliding window per IP.
+    - 15-second per-table submission cooldown (`testFeedbackFloodingTableCooldownAndDuplicateBlocked`).
+    - 60-second duplicate submission rejection (identical comment content for same table).
+    - Table validation: Rejects non-existent tables and tables with status `OUT_OF_SERVICE` (`testFeedbackFloodingRejectionOutOfServiceTable`).
+    - Session ownership check: Validates that provided `sessionId` belongs strictly to the requested table (`testFeedbackFloodingSessionIdValidation`).
+    - Rating bounds check: Validates rating is strictly between 1 and 5.
+  - All rate limit breaches return RFC 7807 `ProblemDetail` with HTTP 429 Too Many Requests.
+

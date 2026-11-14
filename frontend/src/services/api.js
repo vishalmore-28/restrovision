@@ -104,7 +104,9 @@ async function request(endpoint, options = {}) {
     try {
       const errJson = await response.json();
       errMessage = errJson.detail || errJson.message || errJson.title || errMessage;
-    } catch (_) {}
+    } catch (parseErr) {
+      console.warn(`[api] Non-JSON error body on ${url} (${response.status}):`, parseErr?.message || parseErr);
+    }
     throw new Error(errMessage);
   }
 

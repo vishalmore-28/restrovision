@@ -13,7 +13,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
   useEffect(() => {
     api.getActiveAlerts()
       .then(setAlerts)
-      .catch(() => {});
+      .catch((err) => console.warn('[Navbar] Failed to fetch active alerts:', err?.message || err));
 
     const unsub = wsService.subscribe('/topic/restaurants/1/alerts', (newAlert) => {
       setAlerts((prev) => {

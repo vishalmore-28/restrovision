@@ -65,6 +65,18 @@ restrovision:
       service-requests: 1.5
       undelivered-orders: 1.0
       open-tasks: 0.5
+  security:
+    rate-limit:
+      max-attempts-per-ip: ${RESTROVISION_LOGIN_MAX_IP_ATTEMPTS:10}
+      max-attempts-per-account: ${RESTROVISION_LOGIN_MAX_ACCOUNT_ATTEMPTS:5}
+      window-seconds: ${RESTROVISION_LOGIN_WINDOW_SECONDS:60}
+      trusted-proxies: ${RESTROVISION_TRUSTED_PROXIES:127.0.0.1,::1,0:0:0:0:0:0:0:1}
+    feedback:
+      max-per-ip-window: ${RESTROVISION_FEEDBACK_MAX_PER_IP:10}
+      ip-window-seconds: ${RESTROVISION_FEEDBACK_WINDOW_SECONDS:300}
+      table-cooldown-seconds: ${RESTROVISION_FEEDBACK_TABLE_COOLDOWN:15}
+      duplicate-window-seconds: ${RESTROVISION_FEEDBACK_DUPLICATE_WINDOW:60}
+      max-comment-length: ${RESTROVISION_FEEDBACK_MAX_COMMENT_LENGTH:1000}
 
 # Swagger OpenAPI UI
 springdoc:

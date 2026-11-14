@@ -64,11 +64,23 @@ export default function KitchenKds() {
   const [stations, setStations] = useState(INITIAL_STATIONS);
   const [selectedStation, setSelectedStation] = useState(null);
   const [delayedOrders, setDelayedOrders] = useState(INITIAL_DELAYED);
+  const [kdsError, setKdsError] = useState('');
+
+  const flashError = (msg) => {
+    setKdsError(msg);
+    setTimeout(() => setKdsError(''), 4000);
+  };
 
   const loadData = () => {
-    api.getOrders().then((data) => { if (Array.isArray(data) && data.length > 0) setOrders(data); }).catch(() => {});
-    api.getKitchenStations().then((data) => { if (Array.isArray(data) && data.length > 0) setStations(data); }).catch(() => {});
-    api.getDelayedOrders().then((data) => { if (Array.isArray(data) && data.length > 0) setDelayedOrders(data); }).catch(() => {});
+    api.getOrders()
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setOrders(data); })
+      .catch((err) => console.warn('[KitchenKds] Failed to load orders:', err?.message || err));
+    api.getKitchenStations()
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setStations(data); })
+      .catch((err) => console.warn('[KitchenKds] Failed to load kitchen stations:', err?.message || err));
+    api.getDelayedOrders()
+      .then((data) => { if (Array.isArray(data) && data.length > 0) setDelayedOrders(data); })
+      .catch((err) => console.warn('[KitchenKds] Failed to load delayed orders:', err?.message || err));
   };
 
   useEffect(() => {
@@ -79,7 +91,9 @@ export default function KitchenKds() {
     });
 
     const timer = setInterval(() => {
-      api.getDelayedOrders().then(setDelayedOrders).catch(() => {});
+      api.getDelayedOrders()
+        .then(setDelayedOrders)
+        .catch((err) => console.warn('[KitchenKds] Delayed orders poll error:', err?.message || err));
     }, 10000);
 
     return () => {
@@ -91,27 +105,36 @@ export default function KitchenKds() {
   const handleStartOrder = async (orderId) => {
     try {
       await api.startOrderPrep(orderId);
-    } catch (_) {}
-    setOrders((prev) => prev.map((o) => (o.orderId === orderId ? { ...o, status: 'PREPARING' } : o)));
+      setOrders((prev) => prev.map((o) => (o.orderId === orderId ? { ...o, status: 'PREPARING' } : o)));
+    } catch (err) {
+      console.error('[KitchenKds] Failed to start order prep:', err);
+      flashError(`Failed to update order #${orderId} to preparing. Please try again.`);
+    }
   };
 
   const handleMarkReady = async (orderId) => {
     try {
       await api.markOrderReady(orderId);
-    } catch (_) {}
-    setOrders((prev) => prev.map((o) => (o.orderId === orderId ? { ...o, status: 'READY' } : o)));
+      setOrders((prev) => prev.map((o) => (o.orderId === orderId ? { ...o, status: 'READY' } : o)));
+    } catch (err) {
+      console.error('[KitchenKds] Failed to mark order ready:', err);
+      flashError(`Failed to mark order #${orderId} as ready. Please try again.`);
+    }
   };
 
   const handleUpdateItemStatus = async (itemId, status) => {
     try {
       await api.updateOrderItemStatus(itemId, status);
-    } catch (_) {}
-    setOrders((prev) =>
-      prev.map((o) => ({
-        ...o,
-        items: o.items ? o.items.map((it) => (it.orderItemId === itemId ? { ...it, status } : it)) : [],
-      }))
-    );
+      setOrders((prev) =>
+        prev.map((o) => ({
+          ...o,
+          items: o.items ? o.items.map((it) => (it.orderItemId === itemId ? { ...it, status } : it)) : [],
+        }))
+      );
+    } catch (err) {
+      console.error('[KitchenKds] Failed to update item status:', err);
+      flashError('Failed to update item status. Please try again.');
+    }
   };
 
   const activeOrders = orders.filter(
@@ -170,6 +193,20 @@ export default function KitchenKds() {
           ))}
         </div>
       </div>
+
+      {/* Error Feedback Banner */}
+      {kdsError && (
+        <div
+          className="p-3.5 rounded-xl border text-xs flex items-center gap-2.5 shadow-sm"
+          style={{
+            backgroundColor: 'var(--status-critical-bg)',
+            borderColor: 'var(--status-critical-border)',
+            color: 'var(--status-critical)',
+          }}
+        >
+          <span className="font-semibold">{kdsError}</span>
+        </div>
+      )}
 
       {/* Delay Alert Banner */}
       {delayedOrders.length > 0 && (

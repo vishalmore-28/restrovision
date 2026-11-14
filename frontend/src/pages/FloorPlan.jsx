@@ -38,13 +38,16 @@ export default function FloorPlan({ onSelectTab }) {
   const [seatModalOpen, setSeatModalOpen] = useState(false);
   const [partySize, setPartySize] = useState(2);
   const [actionSuccess, setActionSuccess] = useState('');
+  const [actionError, setActionError] = useState('');
 
   const loadTables = () => {
     api.getTables()
       .then((data) => {
         if (Array.isArray(data) && data.length > 0) setTables(data);
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.warn('[FloorPlan] Failed to fetch tables:', err?.message || err);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -86,34 +89,40 @@ export default function FloorPlan({ onSelectTab }) {
   const handleAttend = async (tableId) => {
     try {
       await api.attendTable(tableId);
-    } catch (_) {}
-    setTables((prev) =>
-      prev.map((t) => (t.tableId === tableId ? { ...t, waitingSeconds: 0, waitingAlertLevel: null } : t))
-    );
-    flashSuccess(`Table attended! Waiting timer stopped.`);
+      setTables((prev) =>
+        prev.map((t) => (t.tableId === tableId ? { ...t, waitingSeconds: 0, waitingAlertLevel: null } : t))
+      );
+      flashSuccess(`Table attended! Waiting timer stopped.`);
+    } catch (err) {
+      console.error('[FloorPlan] Failed to record table attendance:', err);
+      flashError('Failed to record table attendance. Please try again.');
+    }
   };
 
   const handleSeatParty = async () => {
     if (!selectedTable) return;
     try {
       await api.seatParty(selectedTable.tableId, partySize, 2);
-    } catch (_) {}
-    setTables((prev) =>
-      prev.map((t) =>
-        t.tableId === selectedTable.tableId
-          ? {
-              ...t,
-              status: 'OCCUPIED',
-              statusSource: 'STAFF',
-              waitingSeconds: 0,
-              assignedWaiterName: 'Ananya S.',
-              sessionSeatedAt: new Date().toISOString(),
-            }
-          : t
-      )
-    );
-    setSeatModalOpen(false);
-    flashSuccess(`Party of ${partySize} seated at ${selectedTable.tableCode}`);
+      setTables((prev) =>
+        prev.map((t) =>
+          t.tableId === selectedTable.tableId
+            ? {
+                ...t,
+                status: 'OCCUPIED',
+                statusSource: 'STAFF',
+                waitingSeconds: 0,
+                assignedWaiterName: 'Ananya S.',
+                sessionSeatedAt: new Date().toISOString(),
+              }
+            : t
+        )
+      );
+      setSeatModalOpen(false);
+      flashSuccess(`Party of ${partySize} seated at ${selectedTable.tableCode}`);
+    } catch (err) {
+      console.error('[FloorPlan] Failed to seat party:', err);
+      flashError('Failed to seat party. Please try again.');
+    }
   };
 
   const handleOverrideStatus = async () => {
@@ -124,22 +133,30 @@ export default function FloorPlan({ onSelectTab }) {
         overrideStatus,
         overrideReason || 'Staff manual floor override'
       );
-    } catch (_) {}
-    setTables((prev) =>
-      prev.map((t) =>
-        t.tableId === selectedTable.tableId
-          ? { ...t, status: overrideStatus, statusSource: 'STAFF', waitingSeconds: 0 }
-          : t
-      )
-    );
-    setOverrideModalOpen(false);
-    setOverrideReason('');
-    flashSuccess(`Table ${selectedTable.tableCode} status overridden to ${overrideStatus}. AI locked for 120s.`);
+      setTables((prev) =>
+        prev.map((t) =>
+          t.tableId === selectedTable.tableId
+            ? { ...t, status: overrideStatus, statusSource: 'STAFF', waitingSeconds: 0 }
+            : t
+        )
+      );
+      setOverrideModalOpen(false);
+      setOverrideReason('');
+      flashSuccess(`Table ${selectedTable.tableCode} status overridden to ${overrideStatus}. AI locked for 120s.`);
+    } catch (err) {
+      console.error('[FloorPlan] Failed to override table status:', err);
+      flashError('Failed to override status. Please try again.');
+    }
   };
 
   const flashSuccess = (msg) => {
     setActionSuccess(msg);
     setTimeout(() => setActionSuccess(''), 4000);
+  };
+
+  const flashError = (msg) => {
+    setActionError(msg);
+    setTimeout(() => setActionError(''), 4000);
   };
 
   const formatWaitTime = (seconds) => {
@@ -310,6 +327,19 @@ export default function FloorPlan({ onSelectTab }) {
         >
           <CheckCircle2 className="w-4 h-4 shrink-0" />
           <span className="font-semibold">{actionSuccess}</span>
+        </div>
+      )}
+
+      {actionError && (
+        <div
+          className="p-3.5 rounded-xl border text-xs flex items-center gap-2.5 shadow-sm transition-opacity duration-150"
+          style={{
+            backgroundColor: 'var(--status-critical-bg)',
+            borderColor: 'var(--status-critical-border)',
+            color: 'var(--status-critical)',
+          }}
+        >
+          <span className="font-semibold">{actionError}</span>
         </div>
       )}
 
