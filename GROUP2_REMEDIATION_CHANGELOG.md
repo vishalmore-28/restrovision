@@ -97,6 +97,22 @@ Remediation Group 2 addressed multi-tenancy safety, telemetry replay and freshne
      - Verified that `findByRestaurantIdOrderByCreatedAtDesc` loads `items` via `@EntityGraph` (`isLoaded == true`).
      - Verified full JSON serialization of Orders, KDS Queue, Delayed Orders, and Analytics Overview with zero `LazyInitializationException`.
 
+### 2.5 Final Transaction Consistency & Idempotency Verification
+- **Modifications**:
+  1. `Backend/src/main/java/com/restrovision/controller/GlobalExceptionHandler.java`:
+     - Added generic `@ExceptionHandler(Exception.class)` returning RFC 7807 `ProblemDetail` with HTTP 500 (`INTERNAL_SERVER_ERROR`).
+  2. `Backend/src/main/java/com/restrovision/repository/ServiceRequestRepository.java`:
+     - Added `findByRestaurantIdAndTableIdAndStatusIn(Long restaurantId, Long tableId, List<String> statuses)` and `findByRestaurantIdAndTableId(Long restaurantId, Long tableId)`.
+  3. `Backend/src/main/java/com/restrovision/service/AiEventIngestionService.java`:
+     - Under `TABLE_OCCUPIED`: Added creation of `Alert` with dedupe key `"TABLE-OCCUPIED-" + tableId` following `tableStateMachine.handleAiOccupied`.
+     - Under `POSSIBLE_SERVICE_REQUEST`: Enforced multi-status blocking (`OPEN`, `ACKNOWLEDGED`, `COMPLETED`, `DISMISSED` on retry; `OPEN`, `ACKNOWLEDGED` on fresh events) preventing duplicate tickets when requests have been acknowledged, completed, or dismissed.
+     - Added test simulation hooks (`setSimulateAlertFailure`, `setSimulateBeforeAppliedFailure`).
+  4. `Backend/src/test/java/com/restrovision/RestrovisionApplicationTests.java`:
+     - Added `testAlertCreationFailureAfterSuccessfulStateProcessing` (Test 1).
+     - Added `testFailureAfterAlertCreationBeforeAppliedStatus` (Test 2).
+     - Added `testServiceRequestIdempotencyAcrossStatusChanges` (Test 3).
+     - Total backend tests increased to 68/68 passing.
+
 ---
 
 ## 3. Investigation of Frontend Bundle Size Discrepancy (Condition 10)

@@ -164,3 +164,85 @@ Executed via Oracle Python 3.11 (`C:\app\Admin\product\26ai\dbhomeFree\python\bi
   ALL EDGE AI TESTS & INGESTION VERIFICATIONS PASSED!
 ==========================================================
 ```
+
+---
+
+### 2.6 Final Transaction Consistency & Idempotency Verification (Tests 1, 2, and 3)
+
+Executed via `com.restrovision.RestrovisionApplicationTests`:
+
+```text
+[INFO] Running com.restrovision.RestrovisionApplicationTests
+...
+[INFO] Tests run: 41, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 19.24 s -- in com.restrovision.RestrovisionApplicationTests
+[INFO] 
+[INFO] Results:
+[INFO] Tests run: 68, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+#### Detailed Test Findings:
+
+1. **Test 1 — Alert creation failure after successful state processing (`testAlertCreationFailureAfterSuccessfulStateProcessing`)**:
+   - **Failure Simulation**: Table state machine successfully committed table state `OCCUPIED` and created `TableSession` with status `ACTIVE`. Alert service failure was simulated immediately following state processing.
+   - **Failure Observations**:
+     - Table state (`OCCUPIED`) and `TableSession` (`ACTIVE`) remained committed in the database due to independent transactional boundaries.
+     - The AI event record was captured by the failure handler and persisted with `processing_status = 'FAILED'`.
+     - In-memory deduplication cache key was evicted, ensuring the event was not falsely marked as an active duplicate.
+     - The alert (`TABLE-OCCUPIED-1`) was verified missing from the database.
+   - **Retry Recovery**:
+     - Retrying the exact same event UUID resulted in `ACCEPTED` (HTTP 200).
+     - The table state machine re-queried active sessions, detected existing session `S-1`, and reused it without creating a duplicate session.
+     - Alert creation succeeded on retry, generating exactly 1 alert linked to `aiEventPk`.
+     - AI event status transitioned from `FAILED` to `APPLIED`.
+     - Exactly 1 record exists in `ai_events` (0 row duplication, unique constraint `uq_ai_event` preserved).
+     - **Side Effects**: Exactly 1 valid session, 1 alert, 0 duplicate records.
+
+2. **Test 2 — Failure after alert creation before APPLIED status (`testFailureAfterAlertCreationBeforeAppliedStatus`)**:
+   - **Failure Simulation**: Table state machine and alert creation both completed and committed. A failure was simulated immediately prior to persisting `processing_status = 'APPLIED'`.
+   - **Failure Observations**:
+     - Table state is `OCCUPIED`, active session exists.
+     - Alert `TABLE-OCCUPIED-2` was persisted with status `OPEN`.
+     - AI event record was persisted with `processing_status = 'FAILED'`.
+   - **Retry Recovery**:
+     - Retrying the exact same event UUID resulted in `ACCEPTED` (HTTP 200).
+     - The table state machine reused the existing active session (session ID unchanged, count = 1).
+     - The alert service queried active alerts matching dedupe key `TABLE-OCCUPIED-2`, found the existing `OPEN` alert, and returned it without creating a duplicate alert (alert ID unchanged, count = 1).
+     - AI event successfully reached `processing_status = 'APPLIED'`.
+     - Exactly 1 record in `ai_events`, 1 session in `table_sessions`, 1 alert in `alerts`.
+     - **Side Effects**: Complete database consistency, zero duplicate sessions or alerts.
+
+3. **Test 3 — Service-request idempotency across status changes (`testServiceRequestIdempotencyAcrossStatusChanges`)**:
+   - **Initial Ingestion**: `POSSIBLE_SERVICE_REQUEST` event created `ServiceRequest #1` with `status = 'OPEN'` and dedupe alert `SR-GESTURE-3`.
+   - **Scenario A (Staff ACKNOWLEDGED request)**:
+     - Staff transitioned request to `ACKNOWLEDGED`.
+     - Client retried original event UUID (simulating edge outbox retry / network timeout).
+     - Service checked blocking statuses (`OPEN`, `ACKNOWLEDGED`, `COMPLETED`, `DISMISSED`) on retry.
+     - Duplicate creation was suppressed; request remained in `ACKNOWLEDGED`; total requests for Table 3 = 1.
+   - **Scenario B (Staff COMPLETED request)**:
+     - Staff transitioned request to `COMPLETED`.
+     - Client retried original event UUID.
+     - Service checked blocking statuses on retry.
+     - Duplicate creation was suppressed; request remained in `COMPLETED`; total requests for Table 3 = 1.
+   - **Scenario C (Staff DISMISSED request)**:
+     - Staff dismissed request as `DISMISSED` (false gesture detection).
+     - Client retried original event UUID.
+     - Duplicate creation was suppressed; request remained `DISMISSED` (not resurrected to `OPEN`); total requests for Table 3 = 1.
+   - **Scenario D (Fresh distinct event)**:
+     - Fresh event with a new event UUID arrived later.
+     - Because no request was currently `OPEN` or `ACKNOWLEDGED` (previous request was completed), a new `ServiceRequest #2` in status `OPEN` was legitimately created.
+
+---
+
+## 3. Architecture Review & Recommendation
+
+### 3.1 Transaction Boundary Evaluation
+- **Current Model**: Independent transactional boundaries per sub-service (`TableStateMachineService` `@Transactional`, `AlertService` `@Transactional`), coordinated by an un-annotated orchestrator (`AiEventIngestionService`).
+- **Partial-Commit Analysis**: If an alert fails after the table state changes, the table transition remains committed while the event is recorded as `FAILED`.
+- **Sufficiency Verdict**: The current independent boundary design is **SUFFICIENT and RECOMMENDED for high-throughput edge AI telemetry**, provided it is paired with the **Idempotent Compensating Retry Pattern** verified in Tests 1, 2, and 3:
+  1. Wrapping the entire ingestion flow in a single outer `@Transactional` is anti-pattern here because:
+     - Database unique-key collisions (`uq_ai_event`) during concurrent deliveries would mark the Spring transaction rollback-only (`UnexpectedRollbackException`), preventing clean HTTP 200 `DUPLICATE_IGNORED` responses to edge nodes.
+     - Long-lived distributed database locks during edge ingestion would degrade throughput.
+  2. The Idempotent State Transition pattern guarantees that retries after partial failure safely resume and complete missing side effects (alerts, tasks) without duplicating already-committed state (sessions, status).
+  3. Authoritative deduplication is strictly anchored in the database unique constraint (`uq_ai_event`).
+

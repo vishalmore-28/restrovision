@@ -66,4 +66,12 @@ public class GlobalExceptionHandler {
         problem.setTitle("Data Conflict");
         return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
     }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ProblemDetail> handleGeneralException(Exception ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage());
+        problem.setType(URI.create("urn:restrovision:error:internal-error"));
+        problem.setTitle("Internal Server Error");
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+    }
 }

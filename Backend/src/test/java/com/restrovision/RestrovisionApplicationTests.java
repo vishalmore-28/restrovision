@@ -26,10 +26,15 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
 import com.restrovision.domain.AiEvent;
+import com.restrovision.domain.Alert;
 import com.restrovision.domain.RestaurantTable;
+import com.restrovision.domain.ServiceRequest;
+import com.restrovision.domain.TableSession;
 import com.restrovision.repository.AiEventRepository;
 import com.restrovision.repository.AlertRepository;
 import com.restrovision.repository.RestaurantTableRepository;
+import com.restrovision.repository.ServiceRequestRepository;
+import com.restrovision.repository.TableSessionRepository;
 import com.restrovision.service.AiEventIngestionService;
 
 import javax.crypto.Mac;
@@ -82,6 +87,12 @@ class RestrovisionApplicationTests {
 
     @Autowired
     private AlertRepository alertRepository;
+
+    @Autowired
+    private TableSessionRepository sessionRepository;
+
+    @Autowired
+    private ServiceRequestRepository serviceRequestRepository;
 
     @Autowired(required = false)
     private Flyway flyway;
@@ -761,6 +772,347 @@ class RestrovisionApplicationTests {
         RestaurantTable table2After = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
         assertThat(table2After.getStatus()).isEqualTo("OCCUPIED");
         assertThat(table2After.getCurrentSessionId()).isEqualTo(activeSessionId);
+    }
+
+    @Test
+    @DisplayName("07l: Test 1 - Alert creation failure after successful state processing, FAILED status, and idempotent retry recovery")
+    void testAlertCreationFailureAfterSuccessfulStateProcessing() throws Exception {
+        aiEventIngestionService.clearRecentEventCache();
+        String edgeToken = getValidEdgeToken();
+        String eventId = UUID.randomUUID().toString();
+
+        // 1. Reset Table 1 to AVAILABLE with no active sessions or alerts
+        RestaurantTable table1 = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
+        table1.setStatus("AVAILABLE");
+        table1.setCurrentSessionId(null);
+        tableRepository.save(table1);
+
+        sessionRepository.findByRestaurantIdAndTableIdAndStatus(1L, 1L, "ACTIVE").ifPresent(s -> {
+            s.setStatus("CLOSED");
+            sessionRepository.save(s);
+        });
+
+        alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(1L, "TABLE-OCCUPIED-1", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"))
+                .ifPresent(alertRepository::delete);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 1);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.95);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        // 2. Simulate alert-service failure AFTER table state machine has successfully completed
+        aiEventIngestionService.setSimulateAlertFailure(true);
+        try {
+            mockMvc.perform(post("/api/v1/ai/events")
+                            .header("Authorization", "Bearer " + edgeToken)
+                            .header("X-Signature", signature)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(rawBytes))
+                    .andExpect(status().isInternalServerError());
+        } finally {
+            aiEventIngestionService.setSimulateAlertFailure(false);
+        }
+
+        // Verification of Failure State:
+        // A. Table state and session changes HAVE committed (independent transaction boundary)
+        RestaurantTable tableAfterFailure = tableRepository.findByRestaurantIdAndTableId(1L, 1L).orElseThrow();
+        assertThat(tableAfterFailure.getStatus()).isEqualTo("OCCUPIED");
+        assertThat(tableAfterFailure.getCurrentSessionId()).isNotNull();
+        Long initialSessionId = tableAfterFailure.getCurrentSessionId();
+
+        TableSession activeSession = sessionRepository.findByRestaurantIdAndSessionId(1L, initialSessionId).orElseThrow();
+        assertThat(activeSession.getStatus()).isEqualTo("ACTIVE");
+
+        // B. AI event in DB is marked FAILED
+        Optional<AiEvent> failedAiEvent = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId);
+        assertThat(failedAiEvent).isPresent();
+        assertThat(failedAiEvent.get().getProcessingStatus()).isEqualTo("FAILED");
+
+        // C. Alert is missing (not persisted due to alert service failure)
+        Optional<Alert> missingAlert = alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(
+                1L, "TABLE-OCCUPIED-1", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"));
+        assertThat(missingAlert).isEmpty();
+
+        // D. In-memory cache was evicted so retry is not blocked
+        assertThat(aiEventIngestionService.isEventInCache(1L, eventId)).isFalse();
+
+        // 3. Retry with the SAME event UUID
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.eventId").value(eventId));
+
+        // Verification of Retry State:
+        // A. Exactly one valid session exists (reused original session, no duplicate session created)
+        List<TableSession> activeSessions = sessionRepository.findByRestaurantId(1L).stream()
+                .filter(s -> Long.valueOf(1L).equals(s.getTableId()) && "ACTIVE".equals(s.getStatus()))
+                .toList();
+        assertThat(activeSessions).hasSize(1);
+        assertThat(activeSessions.get(0).getSessionId()).isEqualTo(initialSessionId);
+
+        // B. Exactly one appropriate alert is created
+        List<Alert> alerts = alertRepository.findByRestaurantIdAndStatusInOrderByCreatedAtDesc(1L, List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"))
+                .stream()
+                .filter(a -> "TABLE-OCCUPIED-1".equals(a.getDedupeKey()))
+                .toList();
+        assertThat(alerts).hasSize(1);
+        assertThat(alerts.get(0).getAlertType()).isEqualTo("TABLE_OCCUPIED");
+        assertThat(alerts.get(0).getAiEventPk()).isEqualTo(failedAiEvent.get().getAiEventPk());
+
+        // C. AI event status updated to APPLIED
+        AiEvent appliedEvent = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId).orElseThrow();
+        assertThat(appliedEvent.getProcessingStatus()).isEqualTo("APPLIED");
+
+        // D. Exactly one record in ai_events table for this event UID (no row duplication)
+        long eventCount = aiEventRepository.findAll().stream()
+                .filter(e -> eventId.equals(e.getEventUid()) && Long.valueOf(1L).equals(e.getRestaurantId()))
+                .count();
+        assertThat(eventCount).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("07m: Test 2 - Failure after alert creation before APPLIED status, idempotent retry with zero duplicates")
+    void testFailureAfterAlertCreationBeforeAppliedStatus() throws Exception {
+        aiEventIngestionService.clearRecentEventCache();
+        String edgeToken = getValidEdgeToken();
+        String eventId = UUID.randomUUID().toString();
+
+        // 1. Reset Table 2 to AVAILABLE
+        RestaurantTable table2 = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+        table2.setStatus("AVAILABLE");
+        table2.setCurrentSessionId(null);
+        tableRepository.save(table2);
+
+        sessionRepository.findByRestaurantIdAndTableIdAndStatus(1L, 2L, "ACTIVE").ifPresent(s -> {
+            s.setStatus("CLOSED");
+            sessionRepository.save(s);
+        });
+
+        alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(1L, "TABLE-OCCUPIED-2", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"))
+                .ifPresent(alertRepository::delete);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 2);
+        payload.put("eventType", "TABLE_OCCUPIED");
+        payload.put("confidence", 0.95);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        // 2. Allow table state processing AND alert creation to succeed, then simulate failure before APPLIED
+        aiEventIngestionService.setSimulateBeforeAppliedFailure(true);
+        try {
+            mockMvc.perform(post("/api/v1/ai/events")
+                            .header("Authorization", "Bearer " + edgeToken)
+                            .header("X-Signature", signature)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(rawBytes))
+                    .andExpect(status().isInternalServerError());
+        } finally {
+            aiEventIngestionService.setSimulateBeforeAppliedFailure(false);
+        }
+
+        // Verification of Partial Success / Failure State:
+        // A. Table state committed to OCCUPIED and session is ACTIVE
+        RestaurantTable tableAfter = tableRepository.findByRestaurantIdAndTableId(1L, 2L).orElseThrow();
+        assertThat(tableAfter.getStatus()).isEqualTo("OCCUPIED");
+        Long sessionId = tableAfter.getCurrentSessionId();
+        assertThat(sessionId).isNotNull();
+
+        // B. Alert was successfully created before the failure occurred
+        Optional<Alert> existingAlert = alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(
+                1L, "TABLE-OCCUPIED-2", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"));
+        assertThat(existingAlert).isPresent();
+        Long initialAlertId = existingAlert.get().getAlertId();
+
+        // C. AI event is marked FAILED
+        AiEvent failedEvent = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId).orElseThrow();
+        assertThat(failedEvent.getProcessingStatus()).isEqualTo("FAILED");
+
+        // 3. Retry with the SAME event UUID
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"))
+                .andExpect(jsonPath("$.eventId").value(eventId));
+
+        // Verification of Retry State:
+        // A. No duplicate session: table 2 still has exactly 1 session, identical ID
+        List<TableSession> sessions = sessionRepository.findByRestaurantId(1L).stream()
+                .filter(s -> Long.valueOf(2L).equals(s.getTableId()) && "ACTIVE".equals(s.getStatus()))
+                .toList();
+        assertThat(sessions).hasSize(1);
+        assertThat(sessions.get(0).getSessionId()).isEqualTo(sessionId);
+
+        // B. No duplicate open alert: exactly 1 alert exists for TABLE-OCCUPIED-2, identical alertId
+        List<Alert> alerts = alertRepository.findByRestaurantIdAndStatusInOrderByCreatedAtDesc(1L, List.of("OPEN", "ACKNOWLEDGED", "ESCALATED"))
+                .stream()
+                .filter(a -> "TABLE-OCCUPIED-2".equals(a.getDedupeKey()))
+                .toList();
+        assertThat(alerts).hasSize(1);
+        assertThat(alerts.get(0).getAlertId()).isEqualTo(initialAlertId);
+
+        // C. Event reached APPLIED
+        AiEvent applied = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId).orElseThrow();
+        assertThat(applied.getProcessingStatus()).isEqualTo("APPLIED");
+
+        // D. Database state completely consistent: exactly 1 ai_events record
+        long dbCount = aiEventRepository.findAll().stream()
+                .filter(e -> eventId.equals(e.getEventUid()) && Long.valueOf(1L).equals(e.getRestaurantId()))
+                .count();
+        assertThat(dbCount).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("07n: Test 3 - Service-request idempotency across OPEN, ACKNOWLEDGED, COMPLETED, DISMISSED")
+    void testServiceRequestIdempotencyAcrossStatusChanges() throws Exception {
+        aiEventIngestionService.clearRecentEventCache();
+        String edgeToken = getValidEdgeToken();
+        String eventId = UUID.randomUUID().toString();
+
+        // Clean up any existing service requests or alerts for Table 3
+        serviceRequestRepository.findByRestaurantIdAndTableId(1L, 3L).forEach(serviceRequestRepository::delete);
+        alertRepository.findByRestaurantIdAndDedupeKeyAndStatusIn(1L, "SR-GESTURE-3", List.of("OPEN", "ACKNOWLEDGED", "ESCALATED", "RESOLVED", "FALSE_ALARM"))
+                .ifPresent(alertRepository::delete);
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("eventId", eventId);
+        payload.put("schemaVersion", "1.0");
+        payload.put("edgeNodeId", "edge-pune-01");
+        payload.put("restaurantId", 1);
+        payload.put("tableId", 3);
+        payload.put("eventType", "POSSIBLE_SERVICE_REQUEST");
+        payload.put("confidence", 0.90);
+        payload.put("occurredAt", Instant.now().toString());
+        payload.put("detectedAt", Instant.now().toString());
+
+        byte[] rawBytes = objectMapper.writeValueAsBytes(payload);
+        String signature = calculateHmac(rawBytes);
+
+        // 1. Initial ingestion: creates ServiceRequest in OPEN status
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        List<ServiceRequest> initialRequests = serviceRequestRepository.findByRestaurantIdAndTableId(1L, 3L);
+        assertThat(initialRequests).hasSize(1);
+        ServiceRequest sr = initialRequests.get(0);
+        assertThat(sr.getStatus()).isEqualTo("OPEN");
+        Long srId = sr.getServiceRequestId();
+
+        // 2. Scenario A: Staff ACKNOWLEDGED the request. Client retries event.
+        sr.setStatus("ACKNOWLEDGED");
+        sr.setAcknowledgedAt(Instant.now());
+        serviceRequestRepository.save(sr);
+
+        // Simulate edge retry after partial failure or network retry
+        AiEvent eventInDb = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId).orElseThrow();
+        eventInDb.setProcessingStatus("FAILED");
+        aiEventRepository.save(eventInDb);
+        aiEventIngestionService.clearRecentEventCache();
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        List<ServiceRequest> requestsAfterAckRetry = serviceRequestRepository.findByRestaurantIdAndTableId(1L, 3L);
+        assertThat(requestsAfterAckRetry).hasSize(1);
+        assertThat(requestsAfterAckRetry.get(0).getServiceRequestId()).isEqualTo(srId);
+        assertThat(requestsAfterAckRetry.get(0).getStatus()).isEqualTo("ACKNOWLEDGED");
+
+        // 3. Scenario B: Staff COMPLETED the request. Client retries event.
+        sr.setStatus("COMPLETED");
+        sr.setCompletedAt(Instant.now());
+        serviceRequestRepository.save(sr);
+
+        eventInDb = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId).orElseThrow();
+        eventInDb.setProcessingStatus("FAILED");
+        aiEventRepository.save(eventInDb);
+        aiEventIngestionService.clearRecentEventCache();
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        List<ServiceRequest> requestsAfterCompRetry = serviceRequestRepository.findByRestaurantIdAndTableId(1L, 3L);
+        assertThat(requestsAfterCompRetry).hasSize(1);
+        assertThat(requestsAfterCompRetry.get(0).getServiceRequestId()).isEqualTo(srId);
+        assertThat(requestsAfterCompRetry.get(0).getStatus()).isEqualTo("COMPLETED");
+
+        // 4. Scenario C: Staff DISMISSED the request. Client retries event.
+        sr.setStatus("DISMISSED");
+        serviceRequestRepository.save(sr);
+
+        eventInDb = aiEventRepository.findByRestaurantIdAndEventUid(1L, eventId).orElseThrow();
+        eventInDb.setProcessingStatus("FAILED");
+        aiEventRepository.save(eventInDb);
+        aiEventIngestionService.clearRecentEventCache();
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", signature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(rawBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        List<ServiceRequest> requestsAfterDismissRetry = serviceRequestRepository.findByRestaurantIdAndTableId(1L, 3L);
+        assertThat(requestsAfterDismissRetry).hasSize(1);
+        assertThat(requestsAfterDismissRetry.get(0).getServiceRequestId()).isEqualTo(srId);
+        assertThat(requestsAfterDismissRetry.get(0).getStatus()).isEqualTo("DISMISSED");
+
+        // 5. Scenario D: Fresh distinct event (new event UUID) arriving later CAN create a fresh request once previous is completed
+        String freshEventId = UUID.randomUUID().toString();
+        payload.put("eventId", freshEventId);
+        byte[] freshBytes = objectMapper.writeValueAsBytes(payload);
+        String freshSignature = calculateHmac(freshBytes);
+
+        mockMvc.perform(post("/api/v1/ai/events")
+                        .header("Authorization", "Bearer " + edgeToken)
+                        .header("X-Signature", freshSignature)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(freshBytes))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ACCEPTED"));
+
+        List<ServiceRequest> requestsAfterFreshEvent = serviceRequestRepository.findByRestaurantIdAndTableId(1L, 3L);
+        assertThat(requestsAfterFreshEvent).hasSize(2);
+        // The newly created request is OPEN
+        assertThat(requestsAfterFreshEvent.stream().anyMatch(r -> "OPEN".equals(r.getStatus()))).isTrue();
     }
 
     @Test

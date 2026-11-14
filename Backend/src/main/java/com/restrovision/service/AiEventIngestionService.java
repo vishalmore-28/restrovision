@@ -30,6 +30,10 @@ public class AiEventIngestionService {
 
     private final ConcurrentHashMap<String, Instant> recentEventCache = new ConcurrentHashMap<>();
 
+    // Test hooks for transaction failure-path simulation (Tests 1 & 2)
+    private volatile boolean simulateAlertFailure = false;
+    private volatile boolean simulateBeforeAppliedFailure = false;
+
     private final AiEventRepository aiEventRepository;
     private final TableStateMachineService tableStateMachine;
     private final AlertService alertService;
@@ -199,26 +203,64 @@ public class AiEventIngestionService {
                         partySize = ((Number) pSizeObj).intValue();
                     }
                 }
-                tableStateMachine.handleAiOccupied(restaurantId, tableId, confidence, envelope.getOccurredAt(), partySize);
+                RestaurantTable tbl = tableStateMachine.handleAiOccupied(restaurantId, tableId, confidence, envelope.getOccurredAt(), partySize);
+
+                if (simulateAlertFailure) {
+                    throw new RuntimeException("Simulated alert-service failure after successful table state transition");
+                }
+
+                String tableCode = tbl != null && tbl.getTableCode() != null ? tbl.getTableCode() : "T" + tableId;
+                Long waiterId = tbl != null ? tbl.getAssignedWaiterId() : null;
+                alertService.createOrUpdateAlert(
+                        restaurantId,
+                        "TABLE_OCCUPIED",
+                        "LOW",
+                        "TABLE-OCCUPIED-" + tableId,
+                        "Table " + tableCode + " occupied (Party size: " + (partySize != null ? partySize : 2) + ")",
+                        tableId,
+                        "WAITER",
+                        waiterId,
+                        eventPk
+                );
             } else if ("TABLE_VACATED".equals(eventType) && tableId != null) {
                 tableStateMachine.handleAiVacated(restaurantId, tableId, confidence, envelope.getOccurredAt());
             } else if ("POSSIBLE_SERVICE_REQUEST".equals(eventType)) {
                 String tableCode = "Unknown";
                 Long assignedWaiterId = null;
+                Long currentSessionId = null;
                 if (tableId != null) {
                     RestaurantTable tbl = tableRepository.findByRestaurantIdAndTableId(restaurantId, tableId).orElse(null);
                     if (tbl != null) {
                         tableCode = tbl.getTableCode();
                         assignedWaiterId = tbl.getAssignedWaiterId();
+                        currentSessionId = tbl.getCurrentSessionId();
                     }
                 }
 
-                // Prevent duplicate open service request on retry if OPEN request already exists for this table
-                List<ServiceRequest> existingOpen = serviceRequestRepository
-                        .findByRestaurantIdAndTableIdAndStatus(restaurantId, tableId, "OPEN");
-                if (existingOpen.isEmpty()) {
+                // Service-Request Idempotency Safeguard (§7.3 & BUG-005):
+                // 1. If an active request already exists (OPEN or ACKNOWLEDGED), do not duplicate it.
+                // 2. On a retry (isRetry == true), do not recreate if already in ANY status (ACKNOWLEDGED, COMPLETED, DISMISSED).
+                // 3. Documented lifecycle:
+                //    - OPEN: Active request awaiting staff assignment or attention.
+                //    - ACKNOWLEDGED: Staff attending; suppresses duplicate AI alerts.
+                //    - COMPLETED: Service fulfilled; retries of same event UUID are ignored; fresh events outside cooldown may re-trigger.
+                //    - DISMISSED: Staff dismissed as false gesture; retries of same event UUID must respect dismissal and not recreate.
+                List<String> blockingStatuses;
+                if (isRetry) {
+                    // Retries must never duplicate or resurrect requests in ANY state
+                    blockingStatuses = List.of("OPEN", "ACKNOWLEDGED", "COMPLETED", "DISMISSED");
+                } else {
+                    // Fresh events are blocked if an active request is already open or being attended
+                    blockingStatuses = List.of("OPEN", "ACKNOWLEDGED");
+                }
+
+                List<ServiceRequest> existingRequests = serviceRequestRepository
+                        .findByRestaurantIdAndTableIdAndStatusIn(restaurantId, tableId, blockingStatuses);
+
+                if (existingRequests.isEmpty()) {
                     ServiceRequest sr = new ServiceRequest();
                     sr.setRestaurantId(restaurantId);
+                    sr.setSessionId(currentSessionId);
                     sr.setTableId(tableId);
                     sr.setTableCode(tableCode);
                     sr.setRequestType("CALL_WAITER");
@@ -226,6 +268,14 @@ public class AiEventIngestionService {
                     sr.setStatus("OPEN");
                     sr.setAssignedEmployeeId(assignedWaiterId);
                     serviceRequestRepository.save(sr);
+                    log.info("Created ServiceRequest #{} for table {} via AI event {}", sr.getServiceRequestId(), tableCode, eventId);
+                } else {
+                    log.info("Suppressed duplicate ServiceRequest for table {} (found existing request in status {}) for event {}",
+                            tableId, existingRequests.get(0).getStatus(), eventId);
+                }
+
+                if (simulateAlertFailure) {
+                    throw new RuntimeException("Simulated alert-service failure after service request creation");
                 }
 
                 alertService.createOrUpdateAlert(
@@ -300,6 +350,10 @@ public class AiEventIngestionService {
                 });
             }
 
+            if (simulateBeforeAppliedFailure) {
+                throw new RuntimeException("Simulated failure before marking AI event as APPLIED");
+            }
+
             aiEvent.setProcessingStatus("APPLIED");
             aiEvent = aiEventRepository.save(aiEvent);
             putInCache(cacheKey, now);
@@ -342,6 +396,22 @@ public class AiEventIngestionService {
 
     public boolean isEventInCache(Long restaurantId, String eventId) {
         return recentEventCache.containsKey(restaurantId + ":" + eventId);
+    }
+
+    public void setSimulateAlertFailure(boolean simulateAlertFailure) {
+        this.simulateAlertFailure = simulateAlertFailure;
+    }
+
+    public boolean isSimulateAlertFailure() {
+        return simulateAlertFailure;
+    }
+
+    public void setSimulateBeforeAppliedFailure(boolean simulateBeforeAppliedFailure) {
+        this.simulateBeforeAppliedFailure = simulateBeforeAppliedFailure;
+    }
+
+    public boolean isSimulateBeforeAppliedFailure() {
+        return simulateBeforeAppliedFailure;
     }
 
     public void clearRecentEventCache() {
