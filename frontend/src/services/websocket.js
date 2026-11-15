@@ -34,8 +34,18 @@ export class WebSocketService {
       return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const brokerURL = `${protocol}//${window.location.host}/ws`;
+    let brokerURL;
+    if (typeof window !== 'undefined' && window.__RESTROVISION_WS_URL__) {
+      brokerURL = window.__RESTROVISION_WS_URL__;
+    } else if (import.meta.env?.VITE_WS_URL) {
+      brokerURL = import.meta.env.VITE_WS_URL;
+    } else if (typeof window !== 'undefined' && window.location.hostname.includes('vercel.app')) {
+      brokerURL = 'wss://restrovision-production.up.railway.app/ws';
+    } else {
+      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:8080';
+      brokerURL = `${protocol}//${host}/ws`;
+    }
 
     this.client = new Client({
       brokerURL,
