@@ -111,11 +111,12 @@ export default function CamerasZones() {
 
     loadRecentEvents();
 
-    const unsubAlerts = wsService.subscribe('/topic/restaurants/1/alerts', () => {
+    const restId = user?.restaurantId || 2;
+    const unsubAlerts = wsService.subscribe(`/topic/restaurants/${restId}/alerts`, () => {
       loadRecentEvents();
     });
 
-    const unsubTables = wsService.subscribe('/topic/restaurants/1/tables', (msg) => {
+    const unsubTables = wsService.subscribe(`/topic/restaurants/${restId}/tables`, (msg) => {
       if (msg?.tableId === 1 && msg?.status) {
         setAiTelemetry((prev) => ({
           ...prev,

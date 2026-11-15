@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
 import {
@@ -27,6 +28,8 @@ const INITIAL_TABLES = [
 ];
 
 export default function FloorPlan({ onSelectTab }) {
+  const auth = useAuth ? useAuth() : null;
+  const restId = auth?.user?.restaurantId || 2;
   const [tables, setTables] = useState(INITIAL_TABLES);
   const [loading, setLoading] = useState(true);
   const [selectedTable, setSelectedTable] = useState(null);
@@ -55,7 +58,7 @@ export default function FloorPlan({ onSelectTab }) {
     loadTables();
 
     // Subscribe to STOMP real-time table updates
-    const unsub = wsService.subscribe('/topic/restaurants/1/tables', (data) => {
+    const unsub = wsService.subscribe(`/topic/restaurants/${restId}/tables`, (data) => {
       if (Array.isArray(data)) {
         setTables(data);
       } else {
