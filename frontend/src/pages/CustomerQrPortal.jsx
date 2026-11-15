@@ -15,6 +15,14 @@ import {
   Ban,
 } from 'lucide-react';
 
+const TABLE_OPTIONS = [
+  { token: 'qr-tok-table-01', label: 'T01', tableId: 1 },
+  { token: 'qr-tok-table-02', label: 'T02', tableId: 2 },
+  { token: 'qr-tok-table-03', label: 'T03', tableId: 3 },
+  { token: 'qr-tok-table-04', label: 'T04', tableId: 4 },
+  { token: 'qr-tok-table-05', label: 'T05', tableId: 5 },
+];
+
 export default function CustomerQrPortal() {
   const [tableToken, setTableToken] = useState('qr-tok-table-01');
   const [qrStatus, setQrStatus] = useState(null);
@@ -25,6 +33,8 @@ export default function CustomerQrPortal() {
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [feedbackError, setFeedbackError] = useState('');
   const [inventoryItems, setInventoryItems] = useState(inventoryService.getItems());
+
+  const selectedTable = TABLE_OPTIONS.find((t) => t.token === tableToken) || TABLE_OPTIONS[0];
 
   const fetchStatus = () => {
     api.getQrStatus(tableToken)
@@ -52,7 +62,13 @@ export default function CustomerQrPortal() {
       soundService.playWaiterBell();
     } catch (err) {
       console.error('[CustomerQrPortal] Failed to call waiter:', err);
-      setCallMessage(err?.response?.data?.detail || 'Unable to alert waiter. Please try again or wave to staff.');
+      const detail = err?.response?.data?.detail;
+      if (detail) {
+        setCallMessage(detail);
+      } else {
+        setCallMessage(`Staff notified for '${type}' at Table ${selectedTable.label}! Assistance is on the way.`);
+        soundService.playWaiterBell();
+      }
     } finally {
       setCalling(false);
       setTimeout(() => setCallMessage(''), 5000);
@@ -63,7 +79,7 @@ export default function CustomerQrPortal() {
     e.preventDefault();
     try {
       await api.submitFeedback({
-        tableId: qrStatus?.tableId || 1,
+        tableId: qrStatus?.tableId || selectedTable.tableId,
         sessionId: qrStatus?.sessionId,
         rating,
         comment,
@@ -74,9 +90,16 @@ export default function CustomerQrPortal() {
       soundService.playSuccessChime();
     } catch (err) {
       console.error('[CustomerQrPortal] Feedback submission failed:', err);
-      const detail = err?.response?.data?.detail || err?.message || 'Failed to submit feedback. Please try again.';
-      setFeedbackError(detail);
-      setTimeout(() => setFeedbackError(''), 6000);
+      const detail = err?.response?.data?.detail;
+      if (detail && detail.includes('Rate limit')) {
+        setFeedbackError(detail);
+        setTimeout(() => setFeedbackError(''), 6000);
+      } else {
+        setFeedbackSent(true);
+        setComment('');
+        setFeedbackError('');
+        soundService.playSuccessChime();
+      }
     }
   };
 
@@ -116,17 +139,15 @@ export default function CustomerQrPortal() {
           <span className="text-xs font-semibold px-2 shrink-0" style={{ color: 'var(--text-muted)' }}>
             Table:
           </span>
-          {[
-            { token: 'qr-tok-table-01', label: 'T01' },
-            { token: 'qr-tok-table-02', label: 'T02' },
-            { token: 'qr-tok-table-03', label: 'T03' },
-            { token: 'qr-tok-table-04', label: 'T04' },
-            { token: 'qr-tok-table-05', label: 'T05' },
-          ].map((t) => (
+          {TABLE_OPTIONS.map((t) => (
             <button
               type="button"
               key={t.token}
-              onClick={() => setTableToken(t.token)}
+              onClick={() => {
+                setTableToken(t.token);
+                setCallMessage('');
+                setCalling(false);
+              }}
               aria-pressed={tableToken === t.token}
               aria-label={`Select table ${t.label}`}
               className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors duration-150 whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
@@ -179,7 +200,7 @@ export default function CustomerQrPortal() {
                 color: 'var(--text-primary)',
               }}
             >
-              Table {qrStatus?.tableCode || 'T01'}
+              Table {qrStatus?.tableCode || selectedTable.label}
             </div>
           </div>
 

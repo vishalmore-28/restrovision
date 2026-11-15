@@ -22,12 +22,19 @@ function MainLayout() {
 
   const [activeTab, setActiveTab] = useState(defaultTab);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mainRef = React.useRef(null);
 
   useEffect(() => {
     if (user) {
       setActiveTab(defaultTab);
     }
   }, [user?.jobRole, defaultTab]);
+
+  useEffect(() => {
+    if (mainRef.current) {
+      mainRef.current.scrollTo({ top: 0, behavior: 'instant' });
+    }
+  }, [activeTab]);
 
   if (loading) {
     return (
@@ -55,6 +62,9 @@ function MainLayout() {
   const handleSelectTab = (tab) => {
     setActiveTab(tab);
     setMobileMenuOpen(false);
+    if (mainRef.current) {
+      mainRef.current.scrollTo({ top: 0, behavior: 'instant' });
+    }
   };
 
   const renderContent = () => {
@@ -136,6 +146,7 @@ function MainLayout() {
           onCloseMobile={() => setMobileMenuOpen(false)}
         />
         <main
+          ref={mainRef}
           className="flex-1 p-3 sm:p-4 md:p-6 overflow-y-auto overflow-x-hidden h-[calc(100vh-61px)] transition-colors duration-150 w-full max-w-full box-border"
           style={{ backgroundColor: 'var(--bg-main)' }}
         >

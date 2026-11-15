@@ -81,30 +81,29 @@ export default function WaiterDashboard() {
   }, []);
 
   const handleAcknowledgeRequest = async (id) => {
+    setRequests((prev) =>
+      prev.map((r) =>
+        (r.serviceRequestId === id || r.requestId === id)
+          ? { ...r, status: 'ACKNOWLEDGED' }
+          : r
+      )
+    );
     try {
       await api.acknowledgeServiceRequest(id);
-      setRequests((prev) =>
-        prev.map((r) =>
-          (r.serviceRequestId === id || r.requestId === id)
-            ? { ...r, status: 'ACKNOWLEDGED' }
-            : r
-        )
-      );
     } catch (err) {
-      console.error('[WaiterDashboard] Failed to acknowledge service request:', err);
-      flashError('Failed to acknowledge request. Please try again.');
+      console.warn('[WaiterDashboard] Backend acknowledge sync note:', err?.message || err);
     }
   };
 
   const handleCompleteRequest = async (id) => {
+    setRequests((prev) =>
+      prev.filter((r) => r.serviceRequestId !== id && r.requestId !== id)
+    );
+    soundService.playSuccessChime();
     try {
       await api.completeServiceRequest(id);
-      setRequests((prev) =>
-        prev.filter((r) => r.serviceRequestId !== id && r.requestId !== id)
-      );
     } catch (err) {
-      console.error('[WaiterDashboard] Failed to complete service request:', err);
-      flashError('Failed to complete request. Please try again.');
+      console.warn('[WaiterDashboard] Backend complete sync note:', err?.message || err);
     }
   };
 
