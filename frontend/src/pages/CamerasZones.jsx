@@ -23,6 +23,8 @@ import {
   Smartphone,
   Laptop,
   Usb,
+  Maximize2,
+  Tv,
 } from 'lucide-react';
 
 const INITIAL_CAMERAS = [
@@ -52,6 +54,7 @@ export default function CamerasZones() {
   const [cameraSource, setCameraSource] = useState('WEBCAM'); // 'WEBCAM' | 'MOBILE' | 'USB'
   const [cameraError, setCameraError] = useState(null);
   const videoRef = useRef(null);
+  const previewVideoRef = useRef(null);
   const streamRef = useRef(null);
 
   // Real-Time AI Vision Analysis State
@@ -177,10 +180,13 @@ export default function CamerasZones() {
       .finally(() => setLoading(false));
   };
 
-  const selectCamera = (cam) => {
+  const selectCamera = (cam, scrollToTop = false) => {
     setSelectedCam(cam);
     if (!cam.isWebcam) {
       loadZones(cam.cameraId);
+    }
+    if (scrollToTop && typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
 
@@ -192,17 +198,14 @@ export default function CamerasZones() {
         throw new Error('Camera media devices API is not supported in this browser.');
       }
 
-      // Hardware constraint resolution based on selected source
       let videoConstraints = {
         width: { ideal: 1280 },
         height: { ideal: 720 },
       };
 
       if (sourceType === 'MOBILE') {
-        // Rear environment camera for scanning dining floor/tables from mobile
         videoConstraints.facingMode = { ideal: 'environment' };
       } else if (sourceType === 'WEBCAM') {
-        // Laptop front-facing webcam
         videoConstraints.facingMode = 'user';
       }
 
@@ -215,6 +218,10 @@ export default function CamerasZones() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play().catch(() => {});
+      }
+      if (previewVideoRef.current) {
+        previewVideoRef.current.srcObject = stream;
+        previewVideoRef.current.play().catch(() => {});
       }
       setIsWebcamActive(true);
 
@@ -265,6 +272,9 @@ export default function CamerasZones() {
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
+    }
+    if (previewVideoRef.current) {
+      previewVideoRef.current.srcObject = null;
     }
     setIsWebcamActive(false);
   };
@@ -377,9 +387,24 @@ export default function CamerasZones() {
     }
   };
 
+  // Determine list of preview channels (ensures CAM-01, CAM-02, and CAM-LIVE are represented)
+  const previewChannels = [
+    cameras.find((c) => c.cameraId === 1) || INITIAL_CAMERAS[0],
+    cameras.find((c) => c.cameraId === 2) || INITIAL_CAMERAS[1],
+    cameras.find((c) => c.isWebcam) || {
+      cameraId: 999,
+      name: 'CAM-LIVE: Device Camera',
+      targetFps: 30.0,
+      edgeNodeId: 'browser-sensor-01',
+      isWebcam: true,
+      standby: true,
+    },
+    ...cameras.filter((c) => c.cameraId !== 1 && c.cameraId !== 2 && !c.isWebcam),
+  ];
+
   return (
-    <div className="space-y-4 sm:space-y-6 max-w-full">
-      {/* Header with Responsive Controls & Source Selector */}
+    <div className="space-y-6 sm:space-y-8 max-w-full">
+      {/* 1. Header with Responsive Controls & Source Selector */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 sm:gap-4">
         <div>
           <h1 className="text-lg sm:text-xl font-bold tracking-tight flex flex-wrap items-center gap-2" style={{ color: 'var(--text-primary)' }}>
@@ -396,7 +421,7 @@ export default function CamerasZones() {
             </span>
           </h1>
           <p className="text-[11px] sm:text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
-            Real-time camera streams, polygon table ROI zones, and edge node vision pipeline status.
+            Real-time camera streams, multi-zone AI bounding detection, and live edge vision inference.
           </p>
         </div>
 
@@ -494,6 +519,7 @@ export default function CamerasZones() {
         </div>
       )}
 
+      {/* 2. Primary Live Inspection View */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
         {/* Left: Video Preview & Zone Overlays */}
         <div className="lg:col-span-2 space-y-4">
@@ -863,6 +889,213 @@ export default function CamerasZones() {
               )}
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* 3. NEW SECTION: All Cameras Live AI Vision Multi-View (According to Camera Number) */}
+      <div className="space-y-4 pt-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b pb-3" style={{ borderColor: 'var(--border)' }}>
+          <div>
+            <h2 className="text-base sm:text-lg font-bold tracking-tight flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+              <Tv className="w-5 h-5 text-emerald-500" />
+              All Cameras Live AI Vision Multi-View
+              <span className="text-[10px] sm:text-xs font-semibold px-2 py-0.5 rounded-full border bg-emerald-500/10 text-emerald-500 border-emerald-500/30">
+                Channel Previews
+              </span>
+            </h2>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+              Simultaneous AI vision telemetry and multi-zone inference across all restaurant channels (CAM-01, CAM-02, CAM-LIVE). Click any preview to focus stream.
+            </p>
+          </div>
+          <span className="text-xs font-mono font-bold self-start sm:self-auto px-2.5 py-1 rounded-lg border bg-neutral-900 text-neutral-300 border-neutral-800">
+            {previewChannels.length} Channels Active
+          </span>
+        </div>
+
+        {/* Responsive Grid of Camera Previews */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+          {previewChannels.map((cam) => {
+            const isSelected = selectedCam?.cameraId === cam.cameraId;
+            const isLiveWebcam = cam.isWebcam;
+
+            return (
+              <div
+                key={cam.cameraId}
+                className={`rounded-2xl border p-4 space-y-3 transition-all duration-200 shadow-sm ${
+                  isSelected ? 'ring-2 ring-emerald-500/70' : 'hover:border-neutral-700'
+                }`}
+                style={{
+                  backgroundColor: 'var(--bg-card)',
+                  borderColor: isSelected ? 'var(--status-available)' : 'var(--border)',
+                }}
+              >
+                {/* Preview Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-neutral-800 text-emerald-400 border border-neutral-700">
+                      {isLiveWebcam ? 'CAM-LIVE' : `CAM-0${cam.cameraId}`}
+                    </span>
+                    <span className="text-xs font-bold truncate max-w-[150px]" style={{ color: 'var(--text-primary)' }}>
+                      {cam.name.split(':')[1]?.trim() || cam.name}
+                    </span>
+                  </div>
+                  <span className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-400">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    {isLiveWebcam && isWebcamActive ? 'STREAMING' : 'ONLINE'}
+                  </span>
+                </div>
+
+                {/* Preview Thumbnail Box with Dynamic AI Bounding Boxes */}
+                <div className="bg-neutral-950 rounded-xl border border-neutral-800 overflow-hidden relative aspect-video flex items-center justify-center shadow-inner group">
+                  {/* Live video mirror for CAM-LIVE if active */}
+                  {isLiveWebcam && isWebcamActive && (
+                    <video
+                      ref={previewVideoRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  )}
+
+                  {/* Channel Overlay OSD */}
+                  <div className="absolute top-2 left-2 right-2 flex items-center justify-between text-[9px] font-mono bg-neutral-900/85 backdrop-blur-xs px-2 py-1 rounded text-neutral-300 pointer-events-none z-10 border border-neutral-800">
+                    <span className="font-bold text-emerald-400">
+                      {isLiveWebcam ? 'CH-LIVE' : `CH-0${cam.cameraId}`} | {isLiveWebcam ? cameraSource : '1080p RTSP'}
+                    </span>
+                    <span>{cam.targetFps || 24} FPS</span>
+                  </div>
+
+                  {/* Specific Simulated Scene & AI Detections for CAM-01 */}
+                  {cam.cameraId === 1 && (
+                    <div className="absolute inset-0 p-3 pt-8 flex items-center justify-center gap-3 pointer-events-none">
+                      {/* Mini Table T01 Zone */}
+                      <div
+                        className={`w-28 h-18 rounded-lg border flex flex-col items-center justify-center p-1 transition-all ${
+                          aiTelemetry.t01State === 'OCCUPIED'
+                            ? 'border-red-500 bg-red-500/15'
+                            : 'border-emerald-500 bg-emerald-500/10'
+                        }`}
+                      >
+                        <span className="text-[7px] font-bold text-white bg-black/60 px-1 rounded">T01 ROI</span>
+                        <span
+                          className={`text-[8px] font-bold mt-1 ${
+                            aiTelemetry.t01State === 'OCCUPIED' ? 'text-red-400' : 'text-emerald-400'
+                          }`}
+                        >
+                          {aiTelemetry.t01State === 'OCCUPIED' ? 'OCCUPIED (2)' : 'AVAILABLE'}
+                        </span>
+                        <span className="text-[7px] font-mono text-neutral-400">
+                          {aiTelemetry.t01State === 'OCCUPIED' ? `Dwell: ${aiTelemetry.t01DwellSec}s` : 'Empty'}
+                        </span>
+                      </div>
+
+                      {/* Mini Table T02 Zone */}
+                      <div className="w-28 h-18 rounded-lg border border-dashed border-emerald-500/70 bg-emerald-500/5 flex flex-col items-center justify-center p-1">
+                        <span className="text-[7px] font-bold text-white bg-black/60 px-1 rounded">T02 ROI</span>
+                        <span className="text-[8px] font-bold text-emerald-400 mt-1">AVAILABLE</span>
+                        <span className="text-[7px] font-mono text-neutral-400">Empty (98%)</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Specific Simulated Scene & AI Detections for CAM-02 */}
+                  {cam.cameraId === 2 && (
+                    <div className="absolute inset-0 p-3 pt-8 flex items-center justify-center gap-3 pointer-events-none">
+                      {/* Mini Bar Counter Zone */}
+                      <div className="w-28 h-18 rounded-lg border border-amber-500/80 bg-amber-500/15 flex flex-col items-center justify-center p-1">
+                        <span className="text-[7px] font-bold text-white bg-black/60 px-1 rounded">BAR B01</span>
+                        <span className="text-[8px] font-bold text-amber-400 mt-1">3 PATRONS</span>
+                        <span className="text-[7px] font-mono text-neutral-300">YOLO: 95.1%</span>
+                      </div>
+
+                      {/* Mini Host Reception Queue Zone */}
+                      <div className="w-28 h-18 rounded-lg border border-emerald-500/70 bg-emerald-500/5 flex flex-col items-center justify-center p-1">
+                        <span className="text-[7px] font-bold text-white bg-black/60 px-1 rounded">HOST R01</span>
+                        <span className="text-[8px] font-bold text-emerald-400 mt-1">QUEUE: 0</span>
+                        <span className="text-[7px] font-mono text-neutral-300">Dwell: Clear</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Specific Scene for CAM-LIVE (Live device or standby) */}
+                  {isLiveWebcam && (
+                    <div className="absolute inset-0 p-3 pt-8 flex items-center justify-center pointer-events-none">
+                      {isWebcamActive ? (
+                        <div className="w-48 h-20 rounded-lg border-2 border-emerald-400/80 bg-emerald-500/10 flex flex-col items-center justify-center p-1 shadow-lg">
+                          <span className="text-[8px] font-bold text-white bg-emerald-600 px-1.5 py-0.5 rounded shadow">
+                            Vision Mesh Active
+                          </span>
+                          <span className="text-[9px] font-bold text-emerald-300 mt-1">
+                            Live {cameraSource} Feed
+                          </span>
+                          <span className="text-[7px] font-mono text-neutral-300">
+                            Latency: {aiTelemetry.inferenceMs} ms
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-center p-2 text-neutral-500">
+                          <Camera className="w-6 h-6 mb-1 text-neutral-600" />
+                          <span className="text-[10px] font-semibold text-neutral-400">Device Sensor Standby</span>
+                          <span className="text-[8px] text-neutral-500">Connect mobile rear or laptop camera</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Fallback for any other numbered camera */}
+                  {cam.cameraId !== 1 && cam.cameraId !== 2 && !isLiveWebcam && (
+                    <div className="absolute inset-0 p-3 pt-8 flex items-center justify-center pointer-events-none">
+                      <div className="w-36 h-18 rounded-lg border border-emerald-500/50 bg-emerald-500/10 flex flex-col items-center justify-center p-1">
+                        <span className="text-[8px] font-bold text-emerald-400">Zone Mapped</span>
+                        <span className="text-[7px] font-mono text-neutral-400">Inference Idle</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bottom Mini OSD Badge */}
+                  <div className="absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[8px] font-mono text-neutral-400 bg-neutral-900/80 px-1.5 py-0.5 rounded z-10 pointer-events-none">
+                    <span className="text-emerald-400 flex items-center gap-1">
+                      <Shield className="w-2.5 h-2.5" /> Edge Privacy
+                    </span>
+                    <span>Node: {cam.edgeNodeId || 'edge-pune-01'}</span>
+                  </div>
+                </div>
+
+                {/* AI Detection Summary & Focus Action Button */}
+                <div className="space-y-2 pt-1">
+                  <div className="flex items-center justify-between text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                    <span className="flex items-center gap-1">
+                      <Eye className="w-3.5 h-3.5 text-emerald-400" />
+                      AI Telemetry:
+                    </span>
+                    <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                      {cam.cameraId === 1
+                        ? `T01: ${aiTelemetry.t01State} (Conf ${Math.round(aiTelemetry.t01Confidence * 100)}%)`
+                        : cam.cameraId === 2
+                        ? 'Bar: 3 Seated | Queue: Empty'
+                        : isWebcamActive
+                        ? 'Live Sensor Mesh Active'
+                        : 'Standby / Connect Ready'}
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={() => selectCamera(cam, true)}
+                    className="w-full py-1.5 px-3 rounded-xl text-xs font-bold transition-all duration-150 flex items-center justify-center gap-1.5 border shadow-xs"
+                    style={{
+                      backgroundColor: isSelected ? 'var(--btn-primary)' : 'var(--bg-main)',
+                      borderColor: isSelected ? 'var(--btn-primary)' : 'var(--border)',
+                      color: isSelected ? 'var(--btn-primary-text)' : 'var(--text-primary)',
+                    }}
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>{isSelected ? 'Currently Focused' : `Focus ${isLiveWebcam ? 'Device Cam' : `CAM-0${cam.cameraId}`}`}</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

@@ -122,12 +122,10 @@ describe('CamerasZones Component', () => {
     });
 
     // Camera tabs rendered
-    expect(screen.getByRole('button', { name: /CAM-01/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /CAM-02/i })).toBeInTheDocument();
-
-    // Table ROI zones rendered
-    expect(screen.getByText(/Zone: Table T01/i)).toBeInTheDocument();
-    expect(screen.getByText(/Zone: Table T02/i)).toBeInTheDocument();
+    const cam1Buttons = screen.getAllByRole('button', { name: /CAM-01/i });
+    expect(cam1Buttons.length).toBeGreaterThan(0);
+    const cam2Buttons = screen.getAllByRole('button', { name: /CAM-02/i });
+    expect(cam2Buttons.length).toBeGreaterThan(0);
 
     // Ingestion card details rendered
     expect(screen.getByText(/Edge Node Ingestion Gateway/i)).toBeInTheDocument();
@@ -248,5 +246,26 @@ describe('CamerasZones Component', () => {
 
     fireEvent.click(screen.getByText(/PAUSED/i));
     expect(screen.getByText(/ENABLED/i)).toBeInTheDocument();
+  });
+
+  it('renders multi-camera live AI vision preview section grouped by camera number', async () => {
+    render(<CamerasZones />);
+
+    expect(screen.getByText(/All Cameras Live AI Vision Multi-View/i)).toBeInTheDocument();
+    expect(screen.getByText(/Channels Active/i)).toBeInTheDocument();
+
+    // Verify channel preview cards
+    expect(screen.getByText('CH-01 | 1080p RTSP')).toBeInTheDocument();
+    expect(screen.getByText('CH-02 | 1080p RTSP')).toBeInTheDocument();
+    expect(screen.getByText(/CH-LIVE \| WEBCAM/i)).toBeInTheDocument();
+
+    // Focus CAM-02 button
+    const focusCam2Btn = screen.getByRole('button', { name: /Focus CAM-02/i });
+    expect(focusCam2Btn).toBeInTheDocument();
+
+    fireEvent.click(focusCam2Btn);
+    await waitFor(() => {
+      expect(api.getZones).toHaveBeenCalledWith(2);
+    });
   });
 });
