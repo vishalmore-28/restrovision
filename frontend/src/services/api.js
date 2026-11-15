@@ -1,4 +1,15 @@
-const API_BASE = '/api/v1';
+export function getApiBase() {
+  if (typeof window !== 'undefined') {
+    if (window.__RESTROVISION_API_BASE__) return window.__RESTROVISION_API_BASE__;
+    if (import.meta.env?.VITE_API_BASE) return import.meta.env.VITE_API_BASE;
+    if (window.location.hostname.includes('vercel.app')) {
+      return 'https://restrovision-production.up.railway.app/api/v1';
+    }
+  }
+  return '/api/v1';
+}
+
+const API_BASE = getApiBase();
 
 export function getCsrfToken() {
   if (typeof document === 'undefined') return '';
