@@ -11,6 +11,14 @@ vi.mock('../services/api', () => ({
   },
 }));
 
+async function renderAnalytics() {
+  const view = render(<Analytics />);
+  await waitFor(() => {
+    expect(api.getAnalyticsOverview).toHaveBeenCalled();
+  });
+  return view;
+}
+
 describe('Analytics Decomposed Dashboard (BUG-021)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -19,7 +27,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
 
   describe('Decomposed Section Rendering', () => {
     it('renders the header with Edge AI telemetry badge', async () => {
-      render(<Analytics />);
+      await renderAnalytics();
 
       expect(screen.getByText(/executive analytics & operations intelligence/i)).toBeInTheDocument();
       expect(screen.getByText(/edge ai telemetry/i)).toBeInTheDocument();
@@ -27,7 +35,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
     });
 
     it('renders the DailyOverviewTab with KPI ribbon and P&L financial metrics', async () => {
-      render(<Analytics />);
+      await renderAnalytics();
 
       // KPI cards (Gross Revenue and Net Profit appear in KPI ribbon and P&L sections)
       const grossRevenueElements = screen.getAllByText(/gross revenue/i);
@@ -46,7 +54,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
     });
 
     it('renders CrowdForecastTab with peak hours and footfall quantile projections', async () => {
-      render(<Analytics />);
+      await renderAnalytics();
 
       expect(screen.getByText(/crowd density & peak dining hours/i)).toBeInTheDocument();
       expect(screen.getByRole('heading', { name: /footfall forecast/i })).toBeInTheDocument();
@@ -62,7 +70,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
     });
 
     it('renders MenuEngineeringTab with dish profitability', async () => {
-      render(<Analytics />);
+      await renderAnalytics();
 
       expect(screen.getByText(/menu engineering & high-margin dish matrix/i)).toBeInTheDocument();
       expect(screen.getByText(/paneer tikka shashlik/i)).toBeInTheDocument();
@@ -71,7 +79,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
     });
 
     it('renders GuestReviewsTab with rating scorecards and review feed', async () => {
-      render(<Analytics />);
+      await renderAnalytics();
 
       expect(screen.getByText(/guest ratings & category scores/i)).toBeInTheDocument();
       expect(screen.getByRole('heading', { name: /verified guest feedback/i })).toBeInTheDocument();
@@ -82,7 +90,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
   describe('Timeframe Switching Navigation', () => {
     it('switches between Daily, Weekly, and Monthly timeframes and refetches API overview', async () => {
       const user = userEvent.setup();
-      render(<Analytics />);
+      await renderAnalytics();
 
       expect(api.getAnalyticsOverview).toHaveBeenCalledWith('daily');
 
@@ -105,7 +113,7 @@ describe('Analytics Decomposed Dashboard (BUG-021)', () => {
   describe('Guest Reviews Sentiment Filtering', () => {
     it('filters review stream by sentiment pills (Positive, Neutral, Critical)', async () => {
       const user = userEvent.setup();
-      render(<Analytics />);
+      await renderAnalytics();
 
       // Initially 'ALL' should show reviews
       expect(screen.getByText(/water refill and table attendance was practically instantaneous/i)).toBeInTheDocument();
