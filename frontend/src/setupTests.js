@@ -56,6 +56,18 @@ afterEach(() => {
   window.sessionStorage.clear();
 });
 
+// Suppress known React 18 act(...) warnings from background timers and microtasks
+const originalError = console.error;
+const originalWarn = console.warn;
+console.error = (...args) => {
+  if (typeof args[0] === 'string' && args[0].includes('was not wrapped in act')) return;
+  originalError(...args);
+};
+console.warn = (...args) => {
+  if (typeof args[0] === 'string' && args[0].includes('was not wrapped in act')) return;
+  originalWarn(...args);
+};
+
 // Mock ResizeObserver for Lucide icons and layout components
 globalThis.ResizeObserver = class ResizeObserver {
   observe() {}
