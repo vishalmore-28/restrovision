@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
+import { soundService } from '../services/soundService';
+import { inventoryService } from '../services/inventoryService';
 import {
   QrCode,
   BellRing,
@@ -10,6 +12,7 @@ import {
   Sparkles,
   Smartphone,
   Utensils,
+  Ban,
 } from 'lucide-react';
 
 export default function CustomerQrPortal() {
@@ -21,6 +24,7 @@ export default function CustomerQrPortal() {
   const [comment, setComment] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [feedbackError, setFeedbackError] = useState('');
+  const [inventoryItems, setInventoryItems] = useState(inventoryService.getItems());
 
   const fetchStatus = () => {
     api.getQrStatus(tableToken)
@@ -32,6 +36,12 @@ export default function CustomerQrPortal() {
     fetchStatus();
     setFeedbackSent(false);
     setFeedbackError('');
+
+    const unsubInventory = inventoryService.subscribe((items) => {
+      setInventoryItems(items);
+    });
+
+    return () => unsubInventory();
   }, [tableToken]);
 
   const handleCall = async (type) => {
@@ -39,6 +49,7 @@ export default function CustomerQrPortal() {
     try {
       const res = await api.callWaiterFromQr(tableToken, type);
       setCallMessage(res?.message || `Request '${type}' received! Waiter on the way.`);
+      soundService.playWaiterBell();
     } catch (err) {
       console.error('[CustomerQrPortal] Failed to call waiter:', err);
       setCallMessage(err?.response?.data?.detail || 'Unable to alert waiter. Please try again or wave to staff.');
@@ -60,6 +71,7 @@ export default function CustomerQrPortal() {
       setFeedbackSent(true);
       setComment('');
       setFeedbackError('');
+      soundService.playSuccessChime();
     } catch (err) {
       console.error('[CustomerQrPortal] Feedback submission failed:', err);
       const detail = err?.response?.data?.detail || err?.message || 'Failed to submit feedback. Please try again.';
@@ -67,6 +79,8 @@ export default function CustomerQrPortal() {
       setTimeout(() => setFeedbackError(''), 6000);
     }
   };
+
+  const items86d = inventoryItems.filter((i) => i.is86d || i.portionsRemaining === 0);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -182,6 +196,26 @@ export default function CustomerQrPortal() {
             >
               <CheckCircle2 className="w-4 h-4 shrink-0" aria-hidden="true" />
               <span>{callMessage}</span>
+            </div>
+          )}
+
+          {/* Kitchen Sold Out Items Notice */}
+          {items86d.length > 0 && (
+            <div
+              className="p-2.5 rounded-xl text-[11px] border flex items-center gap-2"
+              style={{
+                backgroundColor: 'var(--status-occupied-bg)',
+                borderColor: 'var(--status-occupied-border)',
+                color: 'var(--status-occupied)',
+              }}
+            >
+              <Ban className="w-3.5 h-3.5 shrink-0" />
+              <div className="leading-tight">
+                <span className="font-bold">Kitchen Notice: </span>
+                <span className="opacity-90">
+                  {items86d.map((i) => i.name).join(', ')} currently sold out today.
+                </span>
+              </div>
             </div>
           )}
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
+import { soundService } from '../services/soundService';
 import {
   Camera,
   Eye,
@@ -270,6 +271,9 @@ export default function CamerasZones() {
 
           // Upper-quadrant motion: hand waving gesture recognition
           if (upperMotionCount > 12) {
+            if (!person.gesture) {
+              soundService.playWaiterBell();
+            }
             person.gesture = 'Hand Raised / Call Waiter';
             person.gestureUntil = Date.now() + 2500;
           } else if (person.gestureUntil && Date.now() > person.gestureUntil) {
@@ -594,6 +598,7 @@ export default function CamerasZones() {
   const triggerAiSeatedParty = async () => {
     setIsProcessingAction(true);
     setAiStatusMessage('AI Vision: Analyzing frame... Seated party detected at Table T01.');
+    soundService.playSuccessChime();
     try {
       if (api.overrideTableStatus) {
         await api.overrideTableStatus(1, 'OCCUPIED', 'AI Vision: 2 patrons seated (Confidence: 96.4%)');
@@ -633,6 +638,7 @@ export default function CamerasZones() {
   const triggerAiGesture = async () => {
     setIsProcessingAction(true);
     setAiStatusMessage('AI Vision: Analyzing frame... Hand gesture recognized at Table T01.');
+    soundService.playWaiterBell();
     try {
       const newEvent = {
         aiEventPk: Date.now(),
