@@ -5,7 +5,7 @@ export class WebSocketService {
   constructor() {
     this.client = null;
     this.connected = false;
-    this.currentRestaurantId = 1;
+    this.currentRestaurantId = this._detectRestaurantId() || 1;
     // Map of topic (string) -> Map of subId (number) -> callback (function)
     this.subscribers = new Map();
     // Map of topic (string) -> StompSubscription
@@ -14,8 +14,20 @@ export class WebSocketService {
     this._subCounter = 0;
   }
 
-  connect(restaurantId = 1) {
-    this.currentRestaurantId = restaurantId;
+  _detectRestaurantId() {
+    try {
+      const stored = typeof window !== 'undefined' ? sessionStorage.getItem('restrovision_session_user') : null;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed?.restaurantId) return Number(parsed.restaurantId);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  connect(restaurantId) {
+    const detected = this._detectRestaurantId();
+    this.currentRestaurantId = restaurantId || detected || 1;
 
     if (this.client && this.connected) {
       this._flushPendingSubscriptions();
@@ -150,8 +162,9 @@ export class WebSocketService {
 
   _resolveTopic(topic) {
     if (!topic || typeof topic !== 'string') return topic;
-    if (this.currentRestaurantId && this.currentRestaurantId !== 1 && /^\/topic\/restaurants\/1\//.test(topic)) {
-      return topic.replace(/^\/topic\/restaurants\/1\//, `/topic/restaurants/${this.currentRestaurantId}/`);
+    const activeRestId = this.currentRestaurantId || this._detectRestaurantId();
+    if (activeRestId && activeRestId !== 1 && /^\/topic\/restaurants\/1\//.test(topic)) {
+      return topic.replace(/^\/topic\/restaurants\/1\//, `/topic/restaurants/${activeRestId}/`);
     }
     return topic;
   }
