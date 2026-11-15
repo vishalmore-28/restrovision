@@ -21,7 +21,7 @@ const INITIAL_ALERTS = [
 
 export default function AlertCenter() {
   const auth = useAuth ? useAuth() : null;
-  const restId = auth?.user?.restaurantId || 2;
+  const restId = auth?.user?.restaurantId || 1;
   const [alerts, setAlerts] = useState(INITIAL_ALERTS);
   const [filter, setFilter] = useState('ACTIVE'); // ACTIVE, ALL
   const [falseAlarmModal, setFalseAlarmModal] = useState(null);
@@ -51,7 +51,7 @@ export default function AlertCenter() {
     });
 
     return () => unsub();
-  }, [filter]);
+  }, [filter, restId]);
 
   const handleAcknowledge = async (id) => {
     setAlerts((prev) => prev.map((a) => (a.alertId === id ? { ...a, status: 'ACKNOWLEDGED' } : a)));

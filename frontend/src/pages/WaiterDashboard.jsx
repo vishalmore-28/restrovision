@@ -35,7 +35,7 @@ const INITIAL_READY_ORDERS = [
 
 export default function WaiterDashboard() {
   const auth = useAuth ? useAuth() : null;
-  const restId = auth?.user?.restaurantId || 2;
+  const restId = auth?.user?.restaurantId || 1;
   const [workloads, setWorkloads] = useState(INITIAL_WORKLOADS);
   const [requests, setRequests] = useState(INITIAL_REQUESTS);
   const [readyOrders, setReadyOrders] = useState(INITIAL_READY_ORDERS);
@@ -75,13 +75,18 @@ export default function WaiterDashboard() {
     const unsubOrders = wsService.subscribe(`/topic/restaurants/${restId}/orders`, () => {
       loadData();
     });
+    const unsubAlerts = wsService.subscribe(`/topic/restaurants/${restId}/alerts`, () => {
+      loadData();
+      soundService.playWaiterBell();
+    });
 
     return () => {
       unsubInventory();
       unsubTasks();
       unsubOrders();
+      unsubAlerts();
     };
-  }, []);
+  }, [restId]);
 
   const handleAcknowledgeRequest = async (id) => {
     setRequests((prev) =>

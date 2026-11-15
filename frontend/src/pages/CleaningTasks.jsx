@@ -19,7 +19,7 @@ const INITIAL_TASKS = [
 
 export default function CleaningTasks() {
   const auth = useAuth ? useAuth() : null;
-  const restId = auth?.user?.restaurantId || 2;
+  const restId = auth?.user?.restaurantId || 1;
   const [tasks, setTasks] = useState(INITIAL_TASKS);
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -38,8 +38,12 @@ export default function CleaningTasks() {
 
   useEffect(() => {
     loadTasks();
-    const unsub = wsService.subscribe(`/topic/restaurants/${restId}/tasks`, () => loadTasks());
-    return () => unsub();
+    const unsubTasks = wsService.subscribe(`/topic/restaurants/${restId}/tasks`, () => loadTasks());
+    const unsubTables = wsService.subscribe(`/topic/restaurants/${restId}/tables`, () => loadTasks());
+    return () => {
+      unsubTasks();
+      unsubTables();
+    };
   }, [restId]);
 
   const handleStart = async (taskId) => {
