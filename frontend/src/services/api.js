@@ -6,24 +6,54 @@ export function getCsrfToken() {
   return match ? decodeURIComponent(match[2]) : '';
 }
 
-// Deprecated stubs to prevent breaking legacy imports
+let inMemoryAccessToken = '';
+let inMemoryRefreshToken = '';
+
 export function getAuthToken() {
+  if (inMemoryAccessToken) return inMemoryAccessToken;
+  try {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('restrovision_jwt') || localStorage.getItem('restrovision_token') || '';
+    }
+  } catch (_) {}
   return '';
 }
 
-export function setAuthToken() {
+export function setAuthToken(token) {
+  inMemoryAccessToken = token || '';
   try {
-    localStorage.removeItem('restrovision_token');
+    if (typeof window !== 'undefined') {
+      if (token) {
+        sessionStorage.setItem('restrovision_jwt', token);
+      } else {
+        sessionStorage.removeItem('restrovision_jwt');
+        localStorage.removeItem('restrovision_token');
+      }
+    }
   } catch (_) {}
 }
 
 export function getRefreshToken() {
+  if (inMemoryRefreshToken) return inMemoryRefreshToken;
+  try {
+    if (typeof window !== 'undefined') {
+      return sessionStorage.getItem('restrovision_refresh_jwt') || localStorage.getItem('restrovision_refresh_token') || '';
+    }
+  } catch (_) {}
   return '';
 }
 
-export function setRefreshToken() {
+export function setRefreshToken(token) {
+  inMemoryRefreshToken = token || '';
   try {
-    localStorage.removeItem('restrovision_refresh_token');
+    if (typeof window !== 'undefined') {
+      if (token) {
+        sessionStorage.setItem('restrovision_refresh_jwt', token);
+      } else {
+        sessionStorage.removeItem('restrovision_refresh_jwt');
+        localStorage.removeItem('restrovision_refresh_token');
+      }
+    }
   } catch (_) {}
 }
 
@@ -38,10 +68,12 @@ function onRefreshed(success = true) {
 async function request(endpoint, options = {}) {
   const method = (options.method || 'GET').toUpperCase();
   const csrfToken = getCsrfToken();
+  const authToken = getAuthToken();
   const isMutating = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(method);
 
   const headers = {
     'Content-Type': 'application/json',
+    ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
     ...(isMutating && csrfToken ? { 'X-CSRF-TOKEN': csrfToken } : {}),
     ...(options.headers || {}),
   };
@@ -63,6 +95,7 @@ async function request(endpoint, options = {}) {
           credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
             ...(refreshCsrf ? { 'X-CSRF-TOKEN': refreshCsrf } : {}),
           },
           body: JSON.stringify({}),
@@ -70,6 +103,11 @@ async function request(endpoint, options = {}) {
 
         if (refreshRes.ok) {
           isRefreshing = false;
+          try {
+            const data = await refreshRes.json();
+            if (data?.accessToken) setAuthToken(data.accessToken);
+            if (data?.refreshToken) setRefreshToken(data.refreshToken);
+          } catch (_) {}
           onRefreshed(true);
 
           // Retry original request with refreshed cookies
@@ -116,8 +154,20 @@ async function request(endpoint, options = {}) {
 
 export const api = {
   // Auth
-  login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
-  logout: () => request('/auth/logout', { method: 'POST' }),
+  login: async (email, password) => {
+    const res = await request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    if (res?.accessToken) setAuthToken(res.accessToken);
+    if (res?.refreshToken) setRefreshToken(res.refreshToken);
+    return res;
+  },
+  logout: async () => {
+    try {
+      await request('/auth/logout', { method: 'POST' });
+    } finally {
+      setAuthToken('');
+      setRefreshToken('');
+    }
+  },
   getCurrentUser: () => request('/auth/me'),
 
   // Tables

@@ -163,7 +163,7 @@ export function AuthProvider({ children }) {
       const res = await api.login(preset.email, preset.pass);
       setUser(res.user);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
-      wsService.connect(res.user?.restaurantId || 1);
+      wsService.connect(res.user?.restaurantId || 2);
     } catch (err) {
       console.warn('[AuthContext] Quick role switch online login failed, activating local preset profile:', err?.message || err);
       const offlineUser = {
@@ -172,7 +172,7 @@ export function AuthProvider({ children }) {
         fullName: preset.name,
         jobRole: preset.role,
         roles: [preset.role],
-        restaurantId: 1,
+        restaurantId: 2,
       };
       setUser(offlineUser);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(offlineUser));
