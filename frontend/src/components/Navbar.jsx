@@ -18,12 +18,14 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
   const [lastTestedSound, setLastTestedSound] = useState(null);
   const soundPopoverRef = useRef(null);
 
+  const restId = user?.restaurantId || 2;
+
   useEffect(() => {
     api.getActiveAlerts()
       .then(setAlerts)
       .catch((err) => console.warn('[Navbar] Failed to fetch active alerts:', err?.message || err));
 
-    const unsub = wsService.subscribe('/topic/restaurants/1/alerts', (newAlert) => {
+    const unsub = wsService.subscribe(`/topic/restaurants/${restId}/alerts`, (newAlert) => {
       setAlerts((prev) => {
         const filtered = prev.filter((a) => a.alertId !== newAlert.alertId);
         if (newAlert.status === 'OPEN' || newAlert.status === 'ESCALATED') {

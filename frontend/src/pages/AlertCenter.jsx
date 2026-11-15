@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
 import {
@@ -19,6 +20,8 @@ const INITIAL_ALERTS = [
 ];
 
 export default function AlertCenter() {
+  const auth = useAuth ? useAuth() : null;
+  const restId = auth?.user?.restaurantId || 2;
   const [alerts, setAlerts] = useState(INITIAL_ALERTS);
   const [filter, setFilter] = useState('ACTIVE'); // ACTIVE, ALL
   const [falseAlarmModal, setFalseAlarmModal] = useState(null);
@@ -40,7 +43,7 @@ export default function AlertCenter() {
   useEffect(() => {
     loadAlerts();
 
-    const unsub = wsService.subscribe('/topic/restaurants/1/alerts', (newAlert) => {
+    const unsub = wsService.subscribe(`/topic/restaurants/${restId}/alerts`, (newAlert) => {
       setAlerts((prev) => {
         const filtered = prev.filter((a) => a.alertId !== newAlert.alertId);
         return [newAlert, ...filtered];

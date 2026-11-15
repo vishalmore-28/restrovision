@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
 import { soundService } from '../services/soundService';
@@ -33,6 +34,8 @@ const INITIAL_READY_ORDERS = [
 ];
 
 export default function WaiterDashboard() {
+  const auth = useAuth ? useAuth() : null;
+  const restId = auth?.user?.restaurantId || 2;
   const [workloads, setWorkloads] = useState(INITIAL_WORKLOADS);
   const [requests, setRequests] = useState(INITIAL_REQUESTS);
   const [readyOrders, setReadyOrders] = useState(INITIAL_READY_ORDERS);
@@ -65,11 +68,11 @@ export default function WaiterDashboard() {
       setInventoryItems(items);
     });
 
-    const unsubTasks = wsService.subscribe('/topic/restaurants/1/tasks', () => {
+    const unsubTasks = wsService.subscribe(`/topic/restaurants/${restId}/tasks`, () => {
       loadData();
       soundService.playWaiterBell();
     });
-    const unsubOrders = wsService.subscribe('/topic/restaurants/1/orders', () => {
+    const unsubOrders = wsService.subscribe(`/topic/restaurants/${restId}/orders`, () => {
       loadData();
     });
 

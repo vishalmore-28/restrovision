@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
 import {
@@ -17,6 +18,8 @@ const INITIAL_TASKS = [
 ];
 
 export default function CleaningTasks() {
+  const auth = useAuth ? useAuth() : null;
+  const restId = auth?.user?.restaurantId || 2;
   const [tasks, setTasks] = useState(INITIAL_TASKS);
   const [loading, setLoading] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -35,9 +38,9 @@ export default function CleaningTasks() {
 
   useEffect(() => {
     loadTasks();
-    const unsub = wsService.subscribe('/topic/restaurants/1/tasks', () => loadTasks());
+    const unsub = wsService.subscribe(`/topic/restaurants/${restId}/tasks`, () => loadTasks());
     return () => unsub();
-  }, []);
+  }, [restId]);
 
   const handleStart = async (taskId) => {
     setTasks((prev) => prev.map((t) => (t.taskId === taskId ? { ...t, status: 'IN_PROGRESS' } : t)));

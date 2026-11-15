@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
 import { soundService } from '../services/soundService';
@@ -71,6 +72,8 @@ const INITIAL_DELAYED = [
 ];
 
 export default function KitchenKds() {
+  const auth = useAuth ? useAuth() : null;
+  const restId = auth?.user?.restaurantId || 2;
   const [activeTab, setActiveTab] = useState('QUEUE'); // 'QUEUE' | 'INVENTORY'
   const [orders, setOrders] = useState(INITIAL_ORDERS);
   const [stations, setStations] = useState(INITIAL_STATIONS);
@@ -125,7 +128,7 @@ export default function KitchenKds() {
       setInventoryItems(items);
     });
 
-    const unsubOrders = wsService.subscribe('/topic/restaurants/1/orders', () => {
+    const unsubOrders = wsService.subscribe(`/topic/restaurants/${restId}/orders`, () => {
       loadData(true);
     });
 
