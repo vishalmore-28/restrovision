@@ -69,7 +69,13 @@ export default function WaiterDashboard() {
   const handleAcknowledgeRequest = async (id) => {
     try {
       await api.acknowledgeServiceRequest(id);
-      setRequests((prev) => prev.map((r) => (r.requestId === id ? { ...r, status: 'ACKNOWLEDGED' } : r)));
+      setRequests((prev) =>
+        prev.map((r) =>
+          (r.serviceRequestId === id || r.requestId === id)
+            ? { ...r, status: 'ACKNOWLEDGED' }
+            : r
+        )
+      );
     } catch (err) {
       console.error('[WaiterDashboard] Failed to acknowledge service request:', err);
       flashError('Failed to acknowledge request. Please try again.');
@@ -79,7 +85,9 @@ export default function WaiterDashboard() {
   const handleCompleteRequest = async (id) => {
     try {
       await api.completeServiceRequest(id);
-      setRequests((prev) => prev.filter((r) => r.requestId !== id));
+      setRequests((prev) =>
+        prev.filter((r) => r.serviceRequestId !== id && r.requestId !== id)
+      );
     } catch (err) {
       console.error('[WaiterDashboard] Failed to complete service request:', err);
       flashError('Failed to complete request. Please try again.');
