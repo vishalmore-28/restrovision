@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
+import { soundService } from '../services/soundService';
+import { inventoryService } from '../services/inventoryService';
 import {
   UserCheck,
   CheckCircle,
@@ -11,6 +13,7 @@ import {
   AlertTriangle,
   Send,
   Check,
+  Ban,
 } from 'lucide-react';
 
 const INITIAL_WORKLOADS = [
@@ -33,6 +36,7 @@ export default function WaiterDashboard() {
   const [workloads, setWorkloads] = useState(INITIAL_WORKLOADS);
   const [requests, setRequests] = useState(INITIAL_REQUESTS);
   const [readyOrders, setReadyOrders] = useState(INITIAL_READY_ORDERS);
+  const [inventoryItems, setInventoryItems] = useState(inventoryService.getItems());
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState('');
 
@@ -57,10 +61,20 @@ export default function WaiterDashboard() {
   useEffect(() => {
     loadData();
 
-    const unsubTasks = wsService.subscribe('/topic/restaurants/1/tasks', () => loadData());
-    const unsubOrders = wsService.subscribe('/topic/restaurants/1/orders', () => loadData());
+    const unsubInventory = inventoryService.subscribe((items) => {
+      setInventoryItems(items);
+    });
+
+    const unsubTasks = wsService.subscribe('/topic/restaurants/1/tasks', () => {
+      loadData();
+      soundService.playWaiterBell();
+    });
+    const unsubOrders = wsService.subscribe('/topic/restaurants/1/orders', () => {
+      loadData();
+    });
 
     return () => {
+      unsubInventory();
       unsubTasks();
       unsubOrders();
     };
@@ -98,6 +112,7 @@ export default function WaiterDashboard() {
     try {
       await api.deliverOrder(orderId);
       setReadyOrders((prev) => prev.filter((o) => o.orderId !== orderId));
+      soundService.playSuccessChime();
     } catch (err) {
       console.error('[WaiterDashboard] Failed to deliver order:', err);
       flashError(`Failed to mark order #${orderId} as delivered. Please try again.`);
@@ -105,6 +120,7 @@ export default function WaiterDashboard() {
   };
 
   const openRequests = requests.filter((r) => r.status === 'OPEN' || r.status === 'ACKNOWLEDGED');
+  const items86d = inventoryItems.filter((i) => i.is86d || i.portionsRemaining === 0);
 
   return (
     <div className="space-y-6">
@@ -127,6 +143,31 @@ export default function WaiterDashboard() {
           Formula-weighted floor assignments: tables (1.0x), pending requests (1.5x), ready orders (1.0x), open tasks (0.5x).
         </p>
       </div>
+
+      {/* 86'd Kitchen Alert Banner */}
+      {items86d.length > 0 && (
+        <div
+          className="p-3.5 rounded-2xl border text-xs flex items-center justify-between shadow-sm animate-fade-in"
+          style={{
+            backgroundColor: 'var(--status-occupied-bg)',
+            borderColor: 'var(--status-occupied-border)',
+            color: 'var(--status-occupied)',
+          }}
+        >
+          <div className="flex items-center gap-2.5">
+            <Ban className="w-4 h-4 shrink-0" />
+            <div>
+              <span className="font-bold">Kitchen 86'd Notice ({items86d.length} dishes Sold Out): </span>
+              <span className="opacity-90">
+                {items86d.map((i) => i.name).join(', ')} — Do not take table orders for these items.
+              </span>
+            </div>
+          </div>
+          <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded border border-red-500/40 bg-red-500/10 whitespace-nowrap">
+            Kitchen Depleted
+          </span>
+        </div>
+      )}
 
       {actionError && (
         <div

@@ -1,14 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth, ROLE_HIERARCHY } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { Bell, Wifi, WifiOff, Sun, Moon, LogOut, Menu, X, Shield } from 'lucide-react';
+import { Bell, Wifi, WifiOff, Sun, Moon, LogOut, Menu, X, Shield, Volume2, VolumeX, Volume1, Play } from 'lucide-react';
 import { api } from '../services/api';
 import { wsService } from '../services/websocket';
+import { soundService } from '../services/soundService';
 
 export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOpen, onToggleMobileMenu }) {
   const { user, wsConnected, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [alerts, setAlerts] = useState([]);
+
+  // Real-Time Sound Controls State
+  const [soundMuted, setSoundMuted] = useState(soundService.isMuted());
+  const [soundVolume, setSoundVolume] = useState(soundService.getVolume());
+  const [soundMenuOpen, setSoundMenuOpen] = useState(false);
+  const [lastTestedSound, setLastTestedSound] = useState(null);
+  const soundPopoverRef = useRef(null);
 
   useEffect(() => {
     api.getActiveAlerts()
@@ -25,7 +33,23 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
       });
     });
 
-    return () => unsub();
+    const unsubSound = soundService.subscribe((state) => {
+      setSoundMuted(state.muted);
+      setSoundVolume(state.volume);
+    });
+
+    const handleOutsideClick = (e) => {
+      if (soundPopoverRef.current && !soundPopoverRef.current.contains(e.target)) {
+        setSoundMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+
+    return () => {
+      unsub();
+      unsubSound();
+      document.removeEventListener('mousedown', handleOutsideClick);
+    };
   }, []);
 
   const openAlertsCount = alerts.filter(a => a.status === 'OPEN' || a.status === 'ESCALATED').length;
@@ -99,6 +123,140 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
                 <WifiOff className="w-3.5 h-3.5" /> Connecting…
               </span>
             </>
+          )}
+        </div>
+
+        {/* Audio Alerts & Sound Controls */}
+        <div className="relative" ref={soundPopoverRef}>
+          <button
+            onClick={() => setSoundMenuOpen((prev) => !prev)}
+            className="p-2 rounded-xl border transition-colors duration-150 flex items-center justify-center"
+            style={{
+              backgroundColor: soundMuted ? 'var(--status-occupied-bg)' : 'var(--bg-main)',
+              borderColor: soundMuted ? 'var(--status-occupied-border)' : 'var(--border)',
+              color: soundMuted ? 'var(--status-occupied)' : 'var(--text-secondary)',
+            }}
+            title={soundMuted ? 'Sound Alerts Muted (Click to configure)' : `Sound Volume: ${Math.round(soundVolume * 100)}% (Click to configure)`}
+            aria-label="Sound Alerts Configuration"
+          >
+            {soundMuted || soundVolume === 0 ? (
+              <VolumeX className="w-4 h-4" />
+            ) : soundVolume < 0.5 ? (
+              <Volume1 className="w-4 h-4 text-emerald-500" />
+            ) : (
+              <Volume2 className="w-4 h-4 text-emerald-500" />
+            )}
+          </button>
+
+          {/* Sound Controls Popover */}
+          {soundMenuOpen && (
+            <div
+              className="absolute right-0 mt-2 w-72 rounded-2xl border p-4 shadow-xl z-50 space-y-3.5 animate-fade-in"
+              style={{
+                backgroundColor: 'var(--bg-card)',
+                borderColor: 'var(--border)',
+              }}
+            >
+              <div className="flex items-center justify-between border-b pb-2.5" style={{ borderColor: 'var(--border)' }}>
+                <div className="flex items-center gap-2">
+                  <Volume2 className="w-4 h-4 text-emerald-500" />
+                  <span className="text-xs font-bold" style={{ color: 'var(--text-primary)' }}>
+                    Kitchen &amp; Floor Chimes
+                  </span>
+                </div>
+                <button
+                  onClick={() => soundService.toggleMute()}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold border transition-colors ${
+                    soundMuted
+                      ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                      : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                  }`}
+                >
+                  {soundMuted ? 'MUTED' : 'ACTIVE'}
+                </button>
+              </div>
+
+              {/* Volume Slider */}
+              <div className="space-y-1.5">
+                <div className="flex justify-between text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  <span>Volume:</span>
+                  <span className="font-mono font-bold text-emerald-400">
+                    {soundMuted ? '0%' : `${Math.round(soundVolume * 100)}%`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={soundMuted ? 0 : soundVolume}
+                  disabled={soundMuted}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    soundService.setVolume(val);
+                  }}
+                  className="w-full accent-emerald-500 cursor-pointer h-1.5 rounded-lg"
+                />
+              </div>
+
+              {/* Quick Sound Test Matrix */}
+              <div className="space-y-1.5 pt-1">
+                <span className="text-[10px] font-bold uppercase tracking-wider block" style={{ color: 'var(--text-muted)' }}>
+                  Test Audio Chimes:
+                </span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => {
+                      soundService.testSound('KITCHEN');
+                      setLastTestedSound('Kitchen Bell');
+                      setTimeout(() => setLastTestedSound(null), 1500);
+                    }}
+                    className="p-1.5 rounded-lg border text-[11px] font-medium transition-colors hover:opacity-85 text-left flex items-center gap-1.5"
+                    style={{ backgroundColor: 'var(--bg-main)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  >
+                    <span>🔔</span> <span>Kitchen Bell</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      soundService.testSound('WAITER');
+                      setLastTestedSound('Waiter Call');
+                      setTimeout(() => setLastTestedSound(null), 1500);
+                    }}
+                    className="p-1.5 rounded-lg border text-[11px] font-medium transition-colors hover:opacity-85 text-left flex items-center gap-1.5"
+                    style={{ backgroundColor: 'var(--bg-main)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  >
+                    <span>🛎️</span> <span>Waiter Call</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      soundService.testSound('DELAY');
+                      setLastTestedSound('SLA Delay');
+                      setTimeout(() => setLastTestedSound(null), 1500);
+                    }}
+                    className="p-1.5 rounded-lg border text-[11px] font-medium transition-colors hover:opacity-85 text-left flex items-center gap-1.5"
+                    style={{ backgroundColor: 'var(--bg-main)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  >
+                    <span>⚠️</span> <span>SLA Delay</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      soundService.testSound('SUCCESS');
+                      setLastTestedSound('Order Ready');
+                      setTimeout(() => setLastTestedSound(null), 1500);
+                    }}
+                    className="p-1.5 rounded-lg border text-[11px] font-medium transition-colors hover:opacity-85 text-left flex items-center gap-1.5"
+                    style={{ backgroundColor: 'var(--bg-main)', borderColor: 'var(--border)', color: 'var(--text-secondary)' }}
+                  >
+                    <span>✅</span> <span>Order Ready</span>
+                  </button>
+                </div>
+                {lastTestedSound && (
+                  <span className="text-[10px] text-emerald-400 font-mono block text-center pt-0.5 animate-pulse">
+                    Played: {lastTestedSound}
+                  </span>
+                )}
+              </div>
+            </div>
           )}
         </div>
 

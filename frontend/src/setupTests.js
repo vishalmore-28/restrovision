@@ -129,3 +129,40 @@ HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
   rect: vi.fn(),
   clip: vi.fn(),
 }));
+
+// Mock Web Audio API for soundService
+class MockAudioContext {
+  constructor() {
+    this.currentTime = 0;
+    this.state = 'running';
+    this.destination = {};
+  }
+  resume() {
+    return Promise.resolve();
+  }
+  createGain() {
+    return {
+      gain: {
+        setValueAtTime: vi.fn(),
+        exponentialRampToValueAtTime: vi.fn(),
+        linearRampToValueAtTime: vi.fn(),
+      },
+      connect: vi.fn(),
+    };
+  }
+  createOscillator() {
+    return {
+      type: 'sine',
+      frequency: {
+        setValueAtTime: vi.fn(),
+        linearRampToValueAtTime: vi.fn(),
+      },
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+  }
+}
+window.AudioContext = MockAudioContext;
+window.webkitAudioContext = MockAudioContext;
+
