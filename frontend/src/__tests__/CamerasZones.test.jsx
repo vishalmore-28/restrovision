@@ -268,4 +268,34 @@ describe('CamerasZones Component', () => {
       expect(api.getZones).toHaveBeenCalledWith(2);
     });
   });
+
+  it('starts real-time Computer Vision canvas analysis loop when device camera connects', async () => {
+    render(<CamerasZones />);
+
+    const connectBtn = screen.getByText(/Connect Device Camera/i);
+    fireEvent.click(connectBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI Vision Live: WEBCAM Feed Active/i)).toBeInTheDocument();
+      expect(screen.getByText(/Optical Mesh: Active Frame Analysis/i)).toBeInTheDocument();
+      expect(screen.getByText(/Live Optical CV Active/i)).toBeInTheDocument();
+    });
+  });
+
+  it('renders standby view with start action when focusing standby device camera', async () => {
+    render(<CamerasZones />);
+
+    // Click focus device cam button in the preview matrix
+    const focusDeviceCamBtn = screen.getByRole('button', { name: /Focus Device Cam/i });
+    fireEvent.click(focusDeviceCamBtn);
+
+    expect(screen.getByText(/Device Camera Sensor Standby/i)).toBeInTheDocument();
+    const startFeedBtn = screen.getByRole('button', { name: /Start Live AI Camera Feed/i });
+    expect(startFeedBtn).toBeInTheDocument();
+
+    fireEvent.click(startFeedBtn);
+    await waitFor(() => {
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalled();
+    });
+  });
 });

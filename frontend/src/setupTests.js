@@ -123,6 +123,8 @@ HTMLCanvasElement.prototype.getContext = vi.fn(() => ({
   arc: vi.fn(),
   fill: vi.fn(),
   measureText: vi.fn(() => ({ width: 0 })),
+  setLineDash: vi.fn(),
+  getLineDash: vi.fn(() => []),
   transform: vi.fn(),
   rect: vi.fn(),
   clip: vi.fn(),
