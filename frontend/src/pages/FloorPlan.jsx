@@ -99,6 +99,16 @@ export default function FloorPlan({ onSelectTab }) {
     }
   };
 
+  const handleOpenInspector = (table) => {
+    setInspectorTable(table);
+    setTimeout(() => {
+      const el = document.getElementById('table-inspector');
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }, 60);
+  };
+
   const handleSeatParty = async () => {
     if (!selectedTable) return;
     try {
@@ -474,7 +484,7 @@ export default function FloorPlan({ onSelectTab }) {
 
                   <div className="grid grid-cols-2 gap-2">
                     <button
-                      onClick={() => setInspectorTable(table)}
+                      onClick={() => handleOpenInspector(table)}
                       className="py-1.5 px-2 rounded-xl text-xs font-semibold border transition-colors duration-150 flex items-center justify-center gap-1 whitespace-nowrap"
                       style={{
                         backgroundColor: 'var(--bg-main)',
@@ -510,7 +520,8 @@ export default function FloorPlan({ onSelectTab }) {
         {/* Right: Table Inspector Drawer */}
         {inspectorTable && (
           <div
-            className="lg:col-span-4 rounded-2xl p-5 border space-y-4 shadow-sm"
+            id="table-inspector"
+            className="lg:col-span-4 rounded-2xl p-5 border space-y-4 shadow-sm lg:sticky lg:top-4 self-start animate-fade-in"
             style={{
               backgroundColor: 'var(--bg-card)',
               borderColor: 'var(--border)',

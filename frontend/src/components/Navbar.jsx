@@ -56,7 +56,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
 
   return (
     <header
-      className="border-b px-2.5 sm:px-4 md:px-5 py-2.5 sm:py-3 flex items-center justify-between sticky top-0 z-40 transition-colors duration-150 w-full max-w-full box-border overflow-hidden"
+      className="border-b px-2.5 sm:px-4 md:px-5 py-2.5 sm:py-3 flex items-center justify-between sticky top-0 z-50 transition-colors duration-150 w-full max-w-full box-border overflow-visible"
       style={{
         backgroundColor: 'var(--bg-card)',
         borderColor: 'var(--border)',

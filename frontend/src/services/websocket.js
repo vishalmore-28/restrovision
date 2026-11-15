@@ -148,18 +148,30 @@ export class WebSocketService {
     };
   }
 
+  _resolveTopic(topic) {
+    if (!topic || typeof topic !== 'string') return topic;
+    if (this.currentRestaurantId && this.currentRestaurantId !== 1 && /^\/topic\/restaurants\/1\//.test(topic)) {
+      return topic.replace(/^\/topic\/restaurants\/1\//, `/topic/restaurants/${this.currentRestaurantId}/`);
+    }
+    return topic;
+  }
+
   _subscribeBrokerTopic(topic) {
     if (!this.connected || !this.client || this.activeStompSubscriptions.has(topic)) {
       return;
     }
 
+    const brokerTopic = this._resolveTopic(topic);
     try {
-      const stompSub = this.client.subscribe(topic, (msg) => {
+      const stompSub = this.client.subscribe(brokerTopic, (msg) => {
         this._dispatchMessage(topic, msg);
+        if (brokerTopic !== topic) {
+          this._dispatchMessage(brokerTopic, msg);
+        }
       });
       this.activeStompSubscriptions.set(topic, stompSub);
     } catch (err) {
-      console.warn(`[wsService] Failed to subscribe to broker topic ${topic}:`, err);
+      console.warn(`[wsService] Failed to subscribe to broker topic ${brokerTopic}:`, err);
     }
   }
 
