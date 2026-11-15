@@ -64,6 +64,11 @@ export default function CamerasZones() {
   const cvCanvasRef = useRef(null);
   const animFrameRef = useRef(null);
   const lastFrameDataRef = useRef(null);
+  const zonePresenceCountRef = useRef(0);
+  const zoneAbsenceCountRef = useRef(0);
+  const lastAutoTriggerRef = useRef(0);
+  const lastGestureTriggerRef = useRef(0);
+  const autoPilotStepRef = useRef(0);
   const detectedPersonRef = useRef({
     active: false,
     x: 0.35,
@@ -111,13 +116,22 @@ export default function CamerasZones() {
 
     loadRecentEvents();
 
-    const restId = user?.restaurantId || 2;
+    const restId = user?.restaurantId || 1;
     const unsubAlerts = wsService.subscribe(`/topic/restaurants/${restId}/alerts`, () => {
       loadRecentEvents();
     });
 
     const unsubTables = wsService.subscribe(`/topic/restaurants/${restId}/tables`, (msg) => {
-      if (msg?.tableId === 1 && msg?.status) {
+      if (Array.isArray(msg)) {
+        const t1 = msg.find((t) => t.tableId === 1 || t.tableCode === 'T01' || t.tableCode === 'T-01');
+        if (t1 && t1.status) {
+          setAiTelemetry((prev) => ({
+            ...prev,
+            t01State: t1.status,
+            activePatrons: t1.status === 'OCCUPIED' ? 2 : 0,
+          }));
+        }
+      } else if (msg?.tableId === 1 && msg?.status) {
         setAiTelemetry((prev) => ({
           ...prev,
           t01State: msg.status,
@@ -131,7 +145,7 @@ export default function CamerasZones() {
       unsubTables();
       stopWebcam();
     };
-  }, [isAuthorized]);
+  }, [isAuthorized, user?.restaurantId]);
 
   // Continuous AI Vision Loop timer
   useEffect(() => {
@@ -154,19 +168,35 @@ export default function CamerasZones() {
     return () => clearInterval(interval);
   }, [isAiAutoPilot, isAuthorized]);
 
-  // Real-Time In-Browser Computer Vision Processing Loop for Device Camera
+  // Autonomous Multi-Camera AI Vision AutoPilot Lifecycle Loop
   useEffect(() => {
-    if (!isWebcamActive || !isAuthorized) {
-      if (animFrameRef.current) {
-        cancelAnimationFrame(animFrameRef.current);
-        animFrameRef.current = null;
+    if (!isAiAutoPilot || !isAuthorized || isWebcamActive) return;
+
+    const autoCycle = setInterval(() => {
+      const step = autoPilotStepRef.current % 4;
+      autoPilotStepRef.current++;
+
+      if (step === 0) {
+        triggerAiSeatedParty();
+      } else if (step === 1) {
+        triggerAiGesture();
+      } else if (step === 2) {
+        triggerAiVacated();
+      } else if (step === 3) {
+        triggerAiCleaned();
       }
-      return;
-    }
+    }, 15000);
+
+    return () => clearInterval(autoCycle);
+  }, [isAiAutoPilot, isAuthorized, isWebcamActive]);
+
+  // Real-Time Computer Vision / Optical AI Rendering Loop (runs for Webcam AND CCTV)
+  useEffect(() => {
+    if (!isAuthorized) return;
 
     let isMounted = true;
     let lastProcessTime = 0;
-    const TARGET_FPS = 15;
+    const TARGET_FPS = 20;
     const FRAME_INTERVAL = 1000 / TARGET_FPS;
 
     const cvLoop = (timestamp) => {
@@ -174,7 +204,12 @@ export default function CamerasZones() {
 
       if (timestamp - lastProcessTime >= FRAME_INTERVAL) {
         lastProcessTime = timestamp;
-        processLiveVideoFrame();
+        if (isWebcamActive && selectedCam?.isWebcam) {
+          processLiveVideoFrame();
+        } else {
+          drawSimulatedCctvAiOverlay(mainOverlayCanvasRef.current, selectedCam?.cameraId || 1, true);
+          drawSimulatedCctvAiOverlay(previewOverlayCanvasRef.current, selectedCam?.cameraId || 1, false);
+        }
       }
 
       animFrameRef.current = requestAnimationFrame(cvLoop);
@@ -189,7 +224,7 @@ export default function CamerasZones() {
         animFrameRef.current = null;
       }
     };
-  }, [isWebcamActive, isAuthorized]);
+  }, [isWebcamActive, selectedCam?.cameraId, selectedCam?.isWebcam, isAuthorized, aiTelemetry.t01State, aiTelemetry.activeGesture]);
 
   // Optical Frame Differencing and Real-Time Presence Analyzer
   const processLiveVideoFrame = () => {
@@ -289,6 +324,29 @@ export default function CamerasZones() {
           if (person.gestureUntil && Date.now() > person.gestureUntil) {
             person.gesture = null;
           }
+        }
+
+        // Automated real-time state machine triggers from physical camera stream
+        const now = Date.now();
+        if (person.inZoneT01 && motionPixels > 10) {
+          zonePresenceCountRef.current++;
+          zoneAbsenceCountRef.current = 0;
+          if (zonePresenceCountRef.current > 18 && aiTelemetry.t01State !== 'OCCUPIED' && (now - lastAutoTriggerRef.current > 8000)) {
+            lastAutoTriggerRef.current = now;
+            triggerAiSeatedParty();
+          }
+        } else if (!person.inZoneT01 || motionPixels <= 3) {
+          zoneAbsenceCountRef.current++;
+          zonePresenceCountRef.current = Math.max(0, zonePresenceCountRef.current - 1);
+          if (zoneAbsenceCountRef.current > 40 && aiTelemetry.t01State === 'OCCUPIED' && (now - lastAutoTriggerRef.current > 8000)) {
+            lastAutoTriggerRef.current = now;
+            triggerAiVacated();
+          }
+        }
+
+        if (upperMotionCount > 12 && (now - lastGestureTriggerRef.current > 8000)) {
+          lastGestureTriggerRef.current = now;
+          triggerAiGesture();
         }
       }
 
@@ -439,6 +497,113 @@ export default function CamerasZones() {
       ctx.fillStyle = (person?.energy || 0) > 40 ? '#ef4444' : '#10b981';
       ctx.fillRect(mx, my + 10, fillW, meterH);
     }
+  };
+
+  // Render Real-Time Simulated CCTV Overlays & Bounding Boxes (for CAM-01, CAM-02, etc.)
+  const drawSimulatedCctvAiOverlay = (canvas, camId, isMainViewer = true) => {
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const now = Date.now();
+    const pulse = Math.sin(now / 400) * 0.15 + 0.85;
+
+    if (camId === 1) {
+      // CAM-01: Main Dining Area (Tables T01 and T02)
+      const isOccupied = aiTelemetry.t01State === 'OCCUPIED';
+      const isCleaning = aiTelemetry.t01State === 'CLEANING' || aiTelemetry.t01State === 'DIRTY';
+
+      // Table T01 ROI & Detection
+      const t1x = w * 0.08;
+      const t1y = h * 0.18;
+      const t1w = w * 0.38;
+      const t1h = h * 0.65;
+      const t1Color = isOccupied
+        ? `rgba(239, 68, 68, ${pulse})`
+        : isCleaning
+        ? `rgba(245, 158, 11, ${pulse})`
+        : 'rgba(16, 185, 129, 0.85)';
+      const t1Label = isOccupied
+        ? `T01 OCCUPIED (${Math.round(aiTelemetry.t01Confidence * 100)}%)`
+        : isCleaning
+        ? 'T01 SANITIZATION REQ'
+        : 'T01 AVAILABLE (98.2%)';
+
+      drawBBox(ctx, t1x, t1y, t1w, t1h, t1Color, t1Label, isMainViewer);
+
+      if (aiTelemetry.activeGesture) {
+        ctx.fillStyle = '#f59e0b';
+        ctx.font = isMainViewer ? 'bold 11px sans-serif' : 'bold 7px sans-serif';
+        const gw = (ctx.measureText && ctx.measureText('✋ CALL WAITER')?.width) || 70;
+        ctx.fillRect(t1x, t1y + t1h + 4, gw + 10, isMainViewer ? 18 : 12);
+        ctx.fillStyle = '#000000';
+        ctx.fillText('✋ CALL WAITER', t1x + 5, t1y + t1h + (isMainViewer ? 14 : 10));
+      }
+
+      // Table T02 ROI & Detection
+      const t2x = w * 0.54;
+      const t2y = h * 0.18;
+      const t2w = w * 0.38;
+      const t2h = h * 0.65;
+      drawBBox(ctx, t2x, t2y, t2w, t2h, 'rgba(16, 185, 129, 0.85)', 'T02 AVAILABLE (99.1%)', isMainViewer);
+
+    } else if (camId === 2) {
+      // CAM-02: Bar & Entrance Pass
+      const bX = w * 0.06;
+      const bY = h * 0.15;
+      const bW = w * 0.44;
+      const bH = h * 0.70;
+      drawBBox(ctx, bX, bY, bW, bH, 'rgba(245, 158, 11, 0.9)', 'BAR B01: 3 PATRONS (95%)', isMainViewer);
+
+      const qX = w * 0.54;
+      const qY = h * 0.15;
+      const qW = w * 0.40;
+      const qH = h * 0.70;
+      drawBBox(ctx, qX, qY, qW, qH, 'rgba(16, 185, 129, 0.85)', 'HOST QUEUE: 0 (CLEAR)', isMainViewer);
+    } else {
+      // Generic / Other Camera
+      drawBBox(ctx, w * 0.1, h * 0.15, w * 0.8, h * 0.7, 'rgba(16, 185, 129, 0.8)', `CAMERA ${camId}: ACTIVE AI MESH`, isMainViewer);
+    }
+
+    // Top HUD Telemetry on Main Viewer
+    if (isMainViewer) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      ctx.fillRect(w - 145, 8, 137, 22);
+      ctx.fillStyle = '#10b981';
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText(`EDGE INFERENCE: ${aiTelemetry.inferenceMs}ms`, w - 139, 23);
+    }
+  };
+
+  const drawBBox = (ctx, x, y, w, h, color, label, isMain = true) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = isMain ? 2 : 1.5;
+
+    // Corner brackets
+    const c = isMain ? 10 : 6;
+    ctx.beginPath();
+    ctx.moveTo(x, y + c); ctx.lineTo(x, y); ctx.lineTo(x + c, y);
+    ctx.moveTo(x + w - c, y); ctx.lineTo(x + w, y); ctx.lineTo(x + w, y + c);
+    ctx.moveTo(x, y + h - c); ctx.lineTo(x, y + h); ctx.lineTo(x + c, y + h);
+    ctx.moveTo(x + w - c, y + h); ctx.lineTo(x + w, y + h); ctx.lineTo(x + w, y + h - c);
+    ctx.stroke();
+
+    // Translucent fill
+    ctx.fillStyle = color.replace('0.85', '0.08').replace('0.9', '0.08').replace('0.8', '0.08');
+    ctx.fillRect(x, y, w, h);
+
+    // Label tag
+    ctx.font = isMain ? 'bold 10px monospace' : 'bold 7px monospace';
+    const tagH = isMain ? 16 : 11;
+    const tw = (ctx.measureText && ctx.measureText(label)?.width) || 60;
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y - tagH, tw + 8, tagH);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, x + 4, y - (isMain ? 4 : 2));
   };
 
   // RBAC Access Restriction Gate for non-Owner/Manager
@@ -641,6 +806,10 @@ export default function CamerasZones() {
     setAiStatusMessage('AI Vision: Analyzing frame... Hand gesture recognized at Table T01.');
     soundService.playWaiterBell();
     try {
+      if (api.createServiceRequest) {
+        await api.createServiceRequest({ tableId: 1, requestType: 'WAITER_CALL', source: 'AI_VISION' }).catch(() => {});
+      }
+
       const newEvent = {
         aiEventPk: Date.now(),
         eventType: 'GESTURE_DETECTED',
@@ -661,6 +830,8 @@ export default function CamerasZones() {
         setAiTelemetry((prev) => ({ ...prev, activeGesture: null }));
         setAiStatusMessage(null);
       }, 5000);
+    } catch (err) {
+      console.warn('[CamerasZones] AI gesture failed:', err?.message || err);
     } finally {
       setIsProcessingAction(false);
     }
@@ -673,6 +844,10 @@ export default function CamerasZones() {
     try {
       if (api.overrideTableStatus) {
         await api.overrideTableStatus(1, 'DIRTY', 'AI Vision: Patrons vacated, dishes remaining on table');
+      }
+
+      if (api.createTask) {
+        await api.createTask({ tableId: 1, tableCode: 'T01', taskType: 'TABLE_CLEANING', priority: 'HIGH', status: 'OPEN' }).catch(() => {});
       }
 
       const newEvent = {
@@ -699,6 +874,46 @@ export default function CamerasZones() {
     } catch (err) {
       console.warn('[CamerasZones] AI trigger failed:', err?.message || err);
       setAiStatusMessage('AI Vision: Vacated event recorded.');
+      setTimeout(() => setAiStatusMessage(null), 4000);
+    } finally {
+      setIsProcessingAction(false);
+    }
+  };
+
+  // Real-Time AI Detection Trigger: Table Cleaned / Sanitized (Table T01)
+  const triggerAiCleaned = async () => {
+    setIsProcessingAction(true);
+    setAiStatusMessage('AI Vision: Analyzing frame... Table T01 surface sanitized and reset.');
+    soundService.playSuccessChime();
+    try {
+      if (api.overrideTableStatus) {
+        await api.overrideTableStatus(1, 'AVAILABLE', 'AI Vision: Surface clean & sanitized (Housekeeping Gate Passed)');
+      }
+
+      const newEvent = {
+        aiEventPk: Date.now(),
+        eventType: 'TABLE_CLEANED',
+        processingStatus: 'APPLIED',
+        tableId: 1,
+        confidence: 0.985,
+        eventUid: 'AI-CLN-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
+      };
+
+      setRecentEvents((prev) => [newEvent, ...prev]);
+      setAiTelemetry((prev) => ({
+        ...prev,
+        t01State: 'AVAILABLE',
+        activePatrons: 0,
+        t01DwellSec: 0,
+        t01Confidence: 0.985,
+        activeGesture: null,
+      }));
+
+      setAiStatusMessage('AI Vision: Table T01 confirmed AVAILABLE. Ready for new guests.');
+      setTimeout(() => setAiStatusMessage(null), 5000);
+    } catch (err) {
+      console.warn('[CamerasZones] AI trigger failed:', err?.message || err);
+      setAiStatusMessage('AI Vision: Cleaned event recorded.');
       setTimeout(() => setAiStatusMessage(null), 4000);
     } finally {
       setIsProcessingAction(false);
@@ -879,9 +1094,7 @@ export default function CamerasZones() {
               ref={mainOverlayCanvasRef}
               width={640}
               height={360}
-              className={`absolute inset-0 w-full h-full object-cover pointer-events-none z-10 transition-opacity duration-300 ${
-                selectedCam?.isWebcam && isWebcamActive ? 'opacity-100' : 'opacity-0'
-              }`}
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none z-10 opacity-100"
             />
 
             {/* Standby Placeholder when CAM-LIVE is selected but camera not yet turned on */}
@@ -1072,7 +1285,7 @@ export default function CamerasZones() {
               Use your device camera (Mobile / Laptop / USB) or 1-touch triggers to simulate patron arrival, gesture calls, or vacancies. Live updates synchronize across the entire restaurant in real time.
             </p>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pt-1">
               <button
                 disabled={isProcessingAction}
                 onClick={triggerAiSeatedParty}
@@ -1113,6 +1326,20 @@ export default function CamerasZones() {
               >
                 <Power className="w-3.5 h-3.5 shrink-0" />
                 <span>AI Detect: Table Vacated (T01)</span>
+              </button>
+
+              <button
+                disabled={isProcessingAction}
+                onClick={triggerAiCleaned}
+                className="px-3 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 border transition-all duration-150 hover:opacity-90 disabled:opacity-50 min-h-[40px]"
+                style={{
+                  backgroundColor: 'rgba(16, 185, 129, 0.18)',
+                  borderColor: 'rgba(16, 185, 129, 0.6)',
+                  color: 'var(--status-available)',
+                }}
+              >
+                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                <span>AI Detect: Table Cleaned (T01)</span>
               </button>
             </div>
           </div>

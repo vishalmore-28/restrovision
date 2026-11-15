@@ -20,7 +20,7 @@ public class TableStateMachineService {
     private static final Logger log = LoggerFactory.getLogger(TableStateMachineService.class);
 
     private static final Set<String> VALID_STATUSES = Set.of(
-            "AVAILABLE", "OCCUPIED", "CLEANING", "RESERVED", "OUT_OF_SERVICE"
+            "AVAILABLE", "OCCUPIED", "CLEANING", "RESERVED", "OUT_OF_SERVICE", "DIRTY"
     );
 
     private final RestaurantTableRepository tableRepository;
@@ -354,12 +354,16 @@ public class TableStateMachineService {
             }
         }
 
+        if ("DIRTY".equals(newStatus)) {
+            newStatus = "CLEANING";
+        }
+
         String oldStatus = table.getStatus();
         table.setStatus(newStatus);
         table.setStatusSource("STAFF");
         table.setStatusChangedAt(Instant.now());
 
-        if ("AVAILABLE".equals(newStatus) || "OUT_OF_SERVICE".equals(newStatus)) {
+        if ("AVAILABLE".equals(newStatus) || "OUT_OF_SERVICE".equals(newStatus) || "CLEANING".equals(newStatus)) {
             if (table.getCurrentSessionId() != null) {
                 sessionRepository.findByRestaurantIdAndSessionId(restaurantId, table.getCurrentSessionId()).ifPresent(s -> {
                     s.setStatus("CLOSED");
@@ -367,6 +371,32 @@ public class TableStateMachineService {
                     sessionRepository.save(s);
                 });
                 table.setCurrentSessionId(null);
+            }
+        }
+
+        if ("CLEANING".equals(newStatus)) {
+            // Auto create cleaning task if not already open
+            List<StaffTask> existingTasks = taskRepository.findByRestaurantIdOrderByCreatedAtDesc(restaurantId);
+            boolean hasOpenTask = existingTasks.stream()
+                    .anyMatch(t -> tableId.equals(t.getTableId()) && ("OPEN".equals(t.getStatus()) || "IN_PROGRESS".equals(t.getStatus())));
+            if (!hasOpenTask) {
+                StaffTask cleaningTask = new StaffTask();
+                cleaningTask.setRestaurantId(restaurantId);
+                cleaningTask.setTableId(tableId);
+                cleaningTask.setTableCode(table.getTableCode());
+                cleaningTask.setTaskType("TABLE_CLEANING");
+                cleaningTask.setPriority("MEDIUM");
+                cleaningTask.setStatus("OPEN");
+                cleaningTask = taskRepository.save(cleaningTask);
+
+                CleaningRecord cleaningRecord = new CleaningRecord();
+                cleaningRecord.setRestaurantId(restaurantId);
+                cleaningRecord.setTableId(tableId);
+                cleaningRecord.setTaskId(cleaningTask.getTaskId());
+                cleaningRecord.setStatus("PENDING");
+                cleaningRecordRepository.save(cleaningRecord);
+
+                notificationService.publishTaskUpdate(restaurantId, cleaningTask);
             }
         }
 

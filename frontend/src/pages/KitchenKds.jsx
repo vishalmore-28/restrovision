@@ -73,7 +73,7 @@ const INITIAL_DELAYED = [
 
 export default function KitchenKds() {
   const auth = useAuth ? useAuth() : null;
-  const restId = auth?.user?.restaurantId || 2;
+  const restId = auth?.user?.restaurantId || 1;
   const [activeTab, setActiveTab] = useState('QUEUE'); // 'QUEUE' | 'INVENTORY'
   const [orders, setOrders] = useState(INITIAL_ORDERS);
   const [stations, setStations] = useState(INITIAL_STATIONS);
@@ -150,7 +150,7 @@ export default function KitchenKds() {
       unsubOrders();
       clearInterval(timer);
     };
-  }, []);
+  }, [restId]);
 
   const handleStartOrder = async (orderId) => {
     setOrders((prev) => prev.map((o) => (o.orderId === orderId ? { ...o, status: 'PREPARING' } : o)));

@@ -5,7 +5,7 @@ export class WebSocketService {
   constructor() {
     this.client = null;
     this.connected = false;
-    this.currentRestaurantId = this._detectRestaurantId() || 1;
+    this.currentRestaurantId = this._detectRestaurantId() || 2;
     // Map of topic (string) -> Map of subId (number) -> callback (function)
     this.subscribers = new Map();
     // Map of topic (string) -> StompSubscription
@@ -27,7 +27,7 @@ export class WebSocketService {
 
   connect(restaurantId) {
     const detected = this._detectRestaurantId();
-    this.currentRestaurantId = restaurantId || detected || 1;
+    this.currentRestaurantId = restaurantId || detected || 2;
 
     if (this.client && this.connected) {
       this._flushPendingSubscriptions();
@@ -172,9 +172,9 @@ export class WebSocketService {
 
   _resolveTopic(topic) {
     if (!topic || typeof topic !== 'string') return topic;
-    const activeRestId = this.currentRestaurantId || this._detectRestaurantId();
-    if (activeRestId && activeRestId !== 1 && /^\/topic\/restaurants\/1\//.test(topic)) {
-      return topic.replace(/^\/topic\/restaurants\/1\//, `/topic/restaurants/${activeRestId}/`);
+    const activeRestId = this.currentRestaurantId || this._detectRestaurantId() || 2;
+    if (activeRestId && /^\/topic\/restaurants\/\d+\//.test(topic)) {
+      return topic.replace(/^\/topic\/restaurants\/\d+\//, `/topic/restaurants/${activeRestId}/`);
     }
     return topic;
   }

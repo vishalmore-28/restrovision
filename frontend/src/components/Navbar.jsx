@@ -18,7 +18,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
   const [lastTestedSound, setLastTestedSound] = useState(null);
   const soundPopoverRef = useRef(null);
 
-  const restId = user?.restaurantId || 2;
+  const restId = user?.restaurantId || 1;
 
   useEffect(() => {
     api.getActiveAlerts()
@@ -52,7 +52,7 @@ export default function Navbar({ onSelectTab, activeAlertCount = 0, mobileMenuOp
       unsubSound();
       document.removeEventListener('mousedown', handleOutsideClick);
     };
-  }, []);
+  }, [restId]);
 
   const openAlertsCount = alerts.filter(a => a.status === 'OPEN' || a.status === 'ESCALATED').length;
 

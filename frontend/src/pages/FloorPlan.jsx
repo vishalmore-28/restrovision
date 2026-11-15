@@ -29,7 +29,7 @@ const INITIAL_TABLES = [
 
 export default function FloorPlan({ onSelectTab }) {
   const auth = useAuth ? useAuth() : null;
-  const restId = auth?.user?.restaurantId || 2;
+  const restId = auth?.user?.restaurantId || 1;
   const [tables, setTables] = useState(INITIAL_TABLES);
   const [loading, setLoading] = useState(true);
   const [selectedTable, setSelectedTable] = useState(null);
@@ -61,6 +61,8 @@ export default function FloorPlan({ onSelectTab }) {
     const unsub = wsService.subscribe(`/topic/restaurants/${restId}/tables`, (data) => {
       if (Array.isArray(data)) {
         setTables(data);
+      } else if (data && data.tableId) {
+        setTables((prev) => prev.map((t) => (t.tableId === data.tableId ? { ...t, ...data } : t)));
       } else {
         loadTables();
       }
@@ -87,7 +89,7 @@ export default function FloorPlan({ onSelectTab }) {
       unsub();
       clearInterval(timer);
     };
-  }, []);
+  }, [restId]);
 
   const handleAttend = async (tableId) => {
     setTables((prev) =>

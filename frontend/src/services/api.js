@@ -219,6 +219,7 @@ export const api = {
 
   // Service Requests
   getServiceRequests: () => request('/service-requests'),
+  createServiceRequest: (data) => request('/service-requests', { method: 'POST', body: JSON.stringify(data) }),
   acknowledgeServiceRequest: (id) => request(`/service-requests/${id}/acknowledge`, { method: 'PUT' }),
   completeServiceRequest: (id) => request(`/service-requests/${id}/complete`, { method: 'PUT' }),
 
