@@ -102,7 +102,7 @@ export function AuthProvider({ children }) {
         if (profile) {
           setUser(profile);
           sessionStorage.setItem('restrovision_session_user', JSON.stringify(profile));
-          wsService.connect(profile.restaurantId || 1);
+          wsService.connect(profile.restaurantId || 2);
         }
       })
       .catch((err) => {
@@ -119,7 +119,7 @@ export function AuthProvider({ children }) {
       // Profile metadata stored in React state (sensitive JWTs remain isolated in HttpOnly cookies)
       setUser(res.user);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
-      wsService.connect(res.user?.restaurantId || 1);
+      wsService.connect(res.user?.restaurantId || 2);
       return res.user;
     } catch (err) {
       console.warn('[AuthContext] Online login failed, activating fallback demo profile for role session:', err?.message || err);
@@ -130,7 +130,7 @@ export function AuthProvider({ children }) {
         fullName: matched.name,
         jobRole: matched.role,
         roles: [matched.role],
-        restaurantId: 1,
+        restaurantId: 2,
       };
       setUser(offlineUser);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(offlineUser));
@@ -163,7 +163,7 @@ export function AuthProvider({ children }) {
       const res = await api.login(preset.email, preset.pass);
       setUser(res.user);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(res.user));
-      wsService.connect(res.user?.restaurantId || 1);
+      wsService.connect(res.user?.restaurantId || 2);
     } catch (err) {
       console.warn('[AuthContext] Quick role switch online login failed, activating local preset profile:', err?.message || err);
       const offlineUser = {
@@ -172,7 +172,7 @@ export function AuthProvider({ children }) {
         fullName: preset.name,
         jobRole: preset.role,
         roles: [preset.role],
-        restaurantId: 1,
+        restaurantId: 2,
       };
       setUser(offlineUser);
       sessionStorage.setItem('restrovision_session_user', JSON.stringify(offlineUser));
