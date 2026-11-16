@@ -13,6 +13,7 @@ import Analytics from './pages/Analytics';
 import CustomerQrPortal from './pages/CustomerQrPortal';
 import Login from './pages/Login';
 import { ShieldAlert } from 'lucide-react';
+import { Analytics as VercelAnalytics } from '@vercel/analytics/react';
 
 function MainLayout() {
   const { user, loading } = useAuth();
@@ -162,6 +163,7 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <MainLayout />
+        <VercelAnalytics />
       </AuthProvider>
     </ThemeProvider>
   );
