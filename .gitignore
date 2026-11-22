@@ -51,3 +51,9 @@ Thumbs.db
 
 # Binaries & Tunnels
 cloudflared.exe
+
+# Archives & Big Zips
+*.zip
+docs/archive/
+coverage/
+
