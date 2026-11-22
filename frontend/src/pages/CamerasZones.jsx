@@ -26,6 +26,7 @@ import {
   Usb,
   Maximize2,
   Tv,
+  Bot,
 } from 'lucide-react';
 
 const INITIAL_CAMERAS = [
@@ -34,9 +35,11 @@ const INITIAL_CAMERAS = [
 ];
 
 const INITIAL_EVENTS = [
-  { aiEventPk: 1, eventType: 'TABLE_STATE_CHANGED', processingStatus: 'APPLIED', tableId: 1, confidence: 0.984, eventUid: '01HC7R9V44A68B0011C54FE891' },
-  { aiEventPk: 2, eventType: 'PERSON_DETECTED', processingStatus: 'APPLIED', tableId: 3, confidence: 0.942, eventUid: '01HC7R9P22B89A0022D43FE902' },
-  { aiEventPk: 3, eventType: 'GESTURE_DETECTED', processingStatus: 'PENDING', tableId: 1, confidence: 0.891, eventUid: '01HC7R9M11C12C0033E21FE714' },
+  { aiEventPk: 101, eventType: 'TABLE_OCCUPIED', processingStatus: 'APPLIED', tableId: 1, confidence: 0.984, eventUid: '01HC7R9V44A68B0011C54FE891' },
+  { aiEventPk: 102, eventType: 'PERSON_DETECTED', processingStatus: 'APPLIED', tableId: 2, confidence: 0.942, eventUid: '01HC7R9P22B89A0022D43FE902' },
+  { aiEventPk: 103, eventType: 'GESTURE_DETECTED', processingStatus: 'APPLIED', tableId: 1, confidence: 0.891, eventUid: '01HC7R9M11C12C0033E21FE714' },
+  { aiEventPk: 104, eventType: 'TABLE_VACATED', processingStatus: 'APPLIED', tableId: 5, confidence: 0.965, eventUid: '01HC7R9N99D34D0044F32FE523' },
+  { aiEventPk: 105, eventType: 'TABLE_CLEANED', processingStatus: 'APPLIED', tableId: 4, confidence: 0.978, eventUid: '01HC7R9K88E56E0055A43FE634' },
 ];
 
 export default function CamerasZones() {
@@ -52,11 +55,15 @@ export default function CamerasZones() {
 
   // In-browser device camera state & hardware source selection
   const [isWebcamActive, setIsWebcamActive] = useState(false);
-  const [cameraSource, setCameraSource] = useState('WEBCAM'); // 'WEBCAM' | 'MOBILE' | 'USB'
+  const [isVirtualCamera, setIsVirtualCamera] = useState(false);
+  const [cameraSource, setCameraSource] = useState('WEBCAM'); // 'WEBCAM' | 'MOBILE' | 'USB' | 'VIRTUAL'
   const [cameraError, setCameraError] = useState(null);
   const videoRef = useRef(null);
   const previewVideoRef = useRef(null);
   const streamRef = useRef(null);
+  const virtualCanvasRef = useRef(null);
+  const virtualAnimFrameRef = useRef(null);
+  const virtualPatronRef = useRef({ x: 0.28, y: 0.45, t: 0 });
 
   // Real-Time Computer Vision & Optical Flow Canvas References
   const mainOverlayCanvasRef = useRef(null);
@@ -648,8 +655,17 @@ export default function CamerasZones() {
 
   const loadRecentEvents = () => {
     api.getAiEvents()
-      .then((data) => setRecentEvents(Array.isArray(data) ? data : []))
-      .catch((err) => console.warn('[CamerasZones] Failed to load AI events:', err?.message || err))
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setRecentEvents(data);
+        } else {
+          setRecentEvents((prev) => (prev && prev.length > 0 ? prev : INITIAL_EVENTS));
+        }
+      })
+      .catch((err) => {
+        console.warn('[CamerasZones] Failed to load AI events:', err?.message || err);
+        setRecentEvents((prev) => (prev && prev.length > 0 ? prev : INITIAL_EVENTS));
+      })
       .finally(() => setLoading(false));
   };
 
@@ -663,12 +679,190 @@ export default function CamerasZones() {
     }
   };
 
-  // 1-Click Browser Camera Permission & Stream with Hardware Source Routing
+  // Autonomous In-Browser Virtual Edge AI Camera Simulation Stream Generator
+  const startVirtualCameraStream = (sourceLabel = 'Virtual AI Cam') => {
+    setCameraError(null);
+    if (!virtualCanvasRef.current) {
+      const c = document.createElement('canvas');
+      c.width = 640;
+      c.height = 360;
+      virtualCanvasRef.current = c;
+    }
+
+    const canvas = virtualCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (virtualAnimFrameRef.current) {
+      cancelAnimationFrame(virtualAnimFrameRef.current);
+      virtualAnimFrameRef.current = null;
+    }
+
+    const renderVirtualFeed = () => {
+      const w = canvas.width;
+      const h = canvas.height;
+      const patron = virtualPatronRef.current;
+      patron.t += 0.035;
+
+      // Realistic dining floor ambient backdrop
+      ctx.fillStyle = '#0d1117';
+      ctx.fillRect(0, 0, w, h);
+
+      // Floor tiles grid pattern
+      ctx.strokeStyle = '#161d27';
+      ctx.lineWidth = 1;
+      for (let x = 0; x < w; x += 40) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, h);
+        ctx.stroke();
+      }
+      for (let y = 0; y < h; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+      }
+
+      // Overhead warm spotlight illumination
+      if (typeof ctx.createRadialGradient === 'function') {
+        try {
+          const grad1 = ctx.createRadialGradient(w * 0.28, h * 0.42, 10, w * 0.28, h * 0.42, 160);
+          grad1.addColorStop(0, 'rgba(251, 191, 36, 0.12)');
+          grad1.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          ctx.fillStyle = grad1;
+          ctx.fillRect(0, 0, w, h);
+        } catch (e) {}
+      }
+
+      // Dining Table T01 (Left ROI)
+      ctx.fillStyle = '#231e1a';
+      if (typeof ctx.roundRect === 'function') {
+        ctx.beginPath();
+        ctx.roundRect(w * 0.10, h * 0.25, w * 0.28, h * 0.48, 10);
+        ctx.fill();
+        ctx.strokeStyle = '#44372e';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else {
+        ctx.fillRect(w * 0.10, h * 0.25, w * 0.28, h * 0.48);
+      }
+
+      // Table T02 (Right ROI)
+      ctx.fillStyle = '#1c222b';
+      if (typeof ctx.roundRect === 'function') {
+        ctx.beginPath();
+        ctx.roundRect(w * 0.58, h * 0.25, w * 0.28, h * 0.48, 10);
+        ctx.fill();
+        ctx.strokeStyle = '#2d3744';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      } else {
+        ctx.fillRect(w * 0.58, h * 0.25, w * 0.28, h * 0.48);
+      }
+
+      // Dynamic Patron motion tracking physics (walks toward and sits at Table T01)
+      patron.x = 0.24 + Math.sin(patron.t * 0.7) * 0.08;
+      patron.y = 0.45 + Math.cos(patron.t * 0.5) * 0.05;
+
+      const px = patron.x * w;
+      const py = patron.y * h;
+
+      // Patron floor shadow
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.beginPath();
+      if (typeof ctx.ellipse === 'function') {
+        ctx.ellipse(px, py + 26, 20, 9, 0, 0, Math.PI * 2);
+      } else {
+        ctx.arc(px, py + 26, 12, 0, Math.PI * 2);
+      }
+      ctx.fill();
+
+      // Patron avatar
+      ctx.fillStyle = '#94a3b8';
+      ctx.beginPath();
+      ctx.arc(px, py - 12, 11, 0, Math.PI * 2); // Head
+      ctx.fill();
+
+      ctx.fillStyle = '#2563eb'; // Torso
+      ctx.fillRect(px - 12, py, 24, 26);
+
+      // Occasional waiter call gesture animation
+      const isCalling = Math.sin(patron.t * 0.35) > 0.6;
+      if (isCalling) {
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(px + 12, py + 4);
+        ctx.lineTo(px + 22, py - 16 + Math.sin(patron.t * 6) * 5);
+        ctx.stroke();
+      }
+
+      // Timestamp & Stream Identity OSD Header
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+      ctx.fillRect(8, 8, 275, 20);
+      ctx.fillStyle = '#10b981';
+      ctx.font = 'bold 9px monospace';
+      ctx.fillText(`SYNTHETIC STREAM • 30 FPS • ${sourceLabel.toUpperCase()}`, 14, 22);
+
+      virtualAnimFrameRef.current = requestAnimationFrame(renderVirtualFeed);
+    };
+
+    renderVirtualFeed();
+
+    let stream = null;
+    try {
+      if (typeof canvas.captureStream === 'function') {
+        stream = canvas.captureStream(30);
+      }
+    } catch (e) {
+      console.warn('[CamerasZones] captureStream not available in environment:', e);
+    }
+
+    if (stream) {
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      }
+      if (previewVideoRef.current) {
+        previewVideoRef.current.srcObject = stream;
+        previewVideoRef.current.play().catch(() => {});
+      }
+    }
+
+    setIsWebcamActive(true);
+    setIsVirtualCamera(true);
+
+    const webcamCam = {
+      cameraId: 999,
+      name: `CAM-LIVE: ${sourceLabel}`,
+      targetFps: 30.0,
+      edgeNodeId: 'edge-sim-01',
+      isWebcam: true,
+      isVirtual: true,
+    };
+
+    setCameras((prev) => [webcamCam, ...prev.filter((c) => !c.isWebcam)]);
+    setSelectedCam(webcamCam);
+    setAiStatusMessage(`Active: ${sourceLabel} running real-time optical frame diff and edge inference.`);
+    setTimeout(() => setAiStatusMessage(null), 4000);
+  };
+
+  // 1-Click Browser Camera Permission & Stream with Hardware Source Routing & Virtual Fallback
   const startCameraStream = async (sourceType = cameraSource) => {
     setCameraError(null);
+
+    // If Virtual AI simulation selected directly
+    if (sourceType === 'VIRTUAL') {
+      startVirtualCameraStream('Virtual AI Cam');
+      return;
+    }
+
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Camera media devices API is not supported in this browser.');
+        startVirtualCameraStream('Virtual AI Cam');
+        return;
       }
 
       let videoConstraints = {
@@ -682,10 +876,27 @@ export default function CamerasZones() {
         videoConstraints.facingMode = 'user';
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: videoConstraints,
-        audio: false,
-      });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: videoConstraints,
+          audio: false,
+        });
+      } catch (firstErr) {
+        // If permission was denied by user, throw immediately to display permission prompt
+        if (firstErr.name === 'NotAllowedError' || firstErr.name === 'PermissionDeniedError') {
+          throw firstErr;
+        }
+        // Fallback: relax facingMode constraint and retry
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        } catch (secondErr) {
+          throw secondErr;
+        }
+      }
 
       streamRef.current = stream;
       if (videoRef.current) {
@@ -697,6 +908,7 @@ export default function CamerasZones() {
         previewVideoRef.current.play().catch(() => {});
       }
       setIsWebcamActive(true);
+      setIsVirtualCamera(false);
 
       const sourceLabel = sourceType === 'MOBILE' ? 'Mobile Camera' : sourceType === 'USB' ? 'USB / System Cam' : 'Webcam';
       const webcamCam = {
@@ -711,11 +923,22 @@ export default function CamerasZones() {
       setSelectedCam(webcamCam);
     } catch (err) {
       console.warn('[CamerasZones] Camera permission denied/error:', err?.message || err);
-      setCameraError(
-        err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError'
-          ? 'Camera permission was denied. Please allow camera access in your browser.'
-          : (err.message || 'Unable to access device camera.')
-      );
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError(
+          'Camera permission was denied. Please allow camera access in your browser.'
+        );
+      } else if (
+        err.name === 'NotFoundError' ||
+        err.name === 'DevicesNotFoundError' ||
+        (err.message && err.message.toLowerCase().includes('not found')) ||
+        err.name === 'OverconstrainedError'
+      ) {
+        // Physical camera device absent on this hardware -> seamlessly start Virtual AI Simulation!
+        const sourceLabel = sourceType === 'MOBILE' ? 'Mobile Cam (Simulated)' : sourceType === 'USB' ? 'USB Cam (Simulated)' : 'Webcam (Simulated)';
+        startVirtualCameraStream(sourceLabel);
+      } else {
+        setCameraError(err.message || 'Unable to access device camera.');
+      }
     }
   };
 
@@ -739,6 +962,10 @@ export default function CamerasZones() {
   };
 
   const stopWebcam = () => {
+    if (virtualAnimFrameRef.current) {
+      cancelAnimationFrame(virtualAnimFrameRef.current);
+      virtualAnimFrameRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -758,6 +985,7 @@ export default function CamerasZones() {
       if (ctx) ctx.clearRect(0, 0, previewOverlayCanvasRef.current.width, previewOverlayCanvasRef.current.height);
     }
     setIsWebcamActive(false);
+    setIsVirtualCamera(false);
   };
 
   // Real-Time AI Detection Trigger: Seated Party (Table T01)
@@ -1001,6 +1229,18 @@ export default function CamerasZones() {
               <Usb className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">System / USB</span>
               <span className="sm:hidden">USB</span>
+            </button>
+            <button
+              onClick={() => changeCameraSource('VIRTUAL')}
+              className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors ${
+                cameraSource === 'VIRTUAL'
+                  ? 'bg-neutral-800 text-emerald-400 font-bold shadow-xs'
+                  : 'text-neutral-400 hover:text-neutral-200'
+              }`}
+              title="Autonomous Edge AI Virtual Camera Simulation"
+            >
+              <Bot className="w-3.5 h-3.5" />
+              <span>Virtual AI</span>
             </button>
           </div>
 
@@ -1442,9 +1682,15 @@ export default function CamerasZones() {
 
             <div className="space-y-2 max-h-60 sm:max-h-72 overflow-y-auto text-xs">
               {recentEvents.length === 0 ? (
-                <p className="py-6 text-center" style={{ color: 'var(--text-muted)' }}>
-                  No AI events recorded yet for this session.
-                </p>
+                <div className="py-6 text-center space-y-2" style={{ color: 'var(--text-muted)' }}>
+                  <p>No AI events recorded yet for this session.</p>
+                  <button
+                    onClick={() => setRecentEvents(INITIAL_EVENTS)}
+                    className="text-[11px] px-2.5 py-1 rounded-lg border border-neutral-700 bg-neutral-800 text-emerald-400 hover:bg-neutral-700 font-semibold"
+                  >
+                    Load Edge Vision Events
+                  </button>
+                </div>
               ) : (
                 recentEvents.slice(0, 10).map((evt) => (
                   <div
