@@ -5,6 +5,7 @@ import com.restrovision.repository.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,10 +14,11 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Automatically seeds initial demo data when running in local development or in-memory H2 mode.
+ * Automatically seeds initial demo data when running in local development or in-memory H2 mode with local profile.
  * If the database already contains users (e.g. production Oracle or populated DB), it safely skips.
  */
 @Component
+@Profile("local")
 public class DataSeeder implements CommandLineRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DataSeeder.class);

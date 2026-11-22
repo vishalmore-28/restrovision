@@ -203,6 +203,25 @@ describe('CamerasZones Component', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('falls back gracefully to Virtual AI Camera stream when hardware device is not found (NotFoundError)', async () => {
+    const notFoundError = new Error('Requested device not found');
+    notFoundError.name = 'NotFoundError';
+    navigator.mediaDevices.getUserMedia.mockRejectedValue(notFoundError);
+
+    render(<CamerasZones />);
+
+    const connectBtn = screen.getByText(/Connect Device Camera/i);
+    fireEvent.click(connectBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(/Camera permission was denied/i)
+      ).not.toBeInTheDocument();
+      expect(screen.getByText(/Disconnect Camera/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /CAM-LIVE/i })).toBeInTheDocument();
+    });
+  });
+
   it('triggers AI detection of seated party and synchronizes table state to OCCUPIED', async () => {
     render(<CamerasZones />);
 
