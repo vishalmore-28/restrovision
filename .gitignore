@@ -57,3 +57,7 @@ cloudflared.exe
 docs/archive/
 coverage/
 
+
+# Documentation (Kept locally for academic reporting; excluded from GitHub repository)
+documentation/
+docs/
