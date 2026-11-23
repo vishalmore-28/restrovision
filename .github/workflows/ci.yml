@@ -104,7 +104,9 @@ jobs:
           pip install pytest pytest-cov
 
       - name: Execute Pytest Suite
-        run: pytest -v --cov=app
+        run: python -m pytest -v --cov=app
+        env:
+          PYTHONPATH: .
 
   security-audit:
     name: Security Vulnerability Scan (npm & pip)
